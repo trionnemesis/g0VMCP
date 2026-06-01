@@ -1,0 +1,185 @@
+// =====================================================================
+// g0VMCP 領域模型 (DDD) — 政府採購標案情報聚合
+// 來源需求: B 方案架構 (自架擷取後端補完 pcc-tender 缺漏欄位)
+// 對照: spec/event-storming.md / spec/features/*.feature
+// =====================================================================
+
+// =====================================================================
+// Bounded Context: Tender Lifecycle  (★ 核心域)
+// =====================================================================
+
+Table tenders {
+  tender_id   varchar(64) [pk, note: '複合自然鍵: org_id + ":" + job_number']
+  org_id      varchar(32) [not null, note: '採購網機關代碼 orgId — pcc-tender 缺此欄,須由明細擷取補上']
+  job_number  varchar(64) [not null, note: '標案案號 caseNo']
+  agency      varchar(255) [not null]
+  title       text [not null]
+  lifecycle_state tender_state [not null, default: 'TENDERING']
+
+  // --- 由明細層補齊 (pcc-tender 沒有的欄位) ---
+  budget        bigint   [note: 'VO Money: 預算/公告金額 (新台幣元). pcc-tender 缺']
+  open_date     timestamp [note: '開標時間. pcc-tender 缺']
+  bid_deadline  timestamp [note: '截止投標日. pcc-tender 缺']
+  base_price    bigint   [note: '底價 (常保密,多為 null). pcc-tender 缺']
+  bidder_count  int      [note: '投標廠商家數. pcc-tender 缺']
+
+  // --- 採購性質 VO (ProcurementProfile) ---
+  procurement_attr varchar(20) [note: '工程類/財物類/勞務類']
+  procurement_type varchar(40) [note: '公開招標/限制性招標…(招標方式)']
+  award_way        varchar(40) [note: '最低標/最有利標…(決標方式)']
+
+  // --- 分類 (由 Classification BC 寫入) ---
+  category_code varchar(20) [note: '官方標的分類碼']
+  domain_tag    varchar(20) [note: '衍生領域標籤: IT/工程/醫療… (取代標題 ILIKE)']
+
+  first_seen_at timestamp [not null]
+  updated_at    timestamp [not null]
+
+  Note: '''
+  Aggregate Root: Tender
+  - 自然鍵: (org_id, job_number) 全域唯一 → tender_id
+  - 不變量:
+    (1) 同一 tender 的 announcements 依 date 嚴格排序,構成唯一生命週期
+    (2) 一旦存在決標公告 → lifecycle_state = AWARDED (終局)
+    (3) 一旦存在無法決標公告 → lifecycle_state = FAILED (終局)
+    (4) 更正公告不可早於最早的招標公告
+  - 領域事件: TenderRegistered, AnnouncementAppended, TenderAmended,
+              TenderAwarded, TenderFailed, TenderClassified
+  - budget/open_date/bid_deadline/base_price/bidder_count 即本系統相對
+    pcc-tender 的「加值欄位」,全部來自明細頁擷取 (Ingestion BC)
+  '''
+
+  Indexes {
+    (org_id, job_number) [unique]
+    category_code
+    domain_tag
+    lifecycle_state
+  }
+}
+
+Enum tender_state {
+  TENDERING [note: '招標中']
+  AMENDED   [note: '已更正(仍招標中)']
+  AWARDED   [note: '已決標 — 終局']
+  FAILED    [note: '無法決標 — 終局']
+}
+
+Table announcements {
+  id          uuid [pk]
+  tender_id   varchar(64) [not null, ref: > tenders.tender_id]
+  ann_type    announcement_type [not null]
+  tender_seq  varchar(8) [note: '標序 tenderSq — (tender_id, tender_seq, ann_type) 唯一']
+  ann_date    date [not null, note: '公告日']
+  notice_date date [note: '刊登日 — pcc-tender 僅決標公告有值']
+  payload     jsonb [not null, note: '該公告完整明細快照 (raw + parsed)']
+  source_url  text [note: '明細頁 URL — 本系統實際抓得到,補 pcc-tender 全空的 detail_url']
+  fetched_at  timestamp [not null]
+
+  Note: '''
+  Entity (within Tender aggregate) — 不可獨立於 Tender 存在
+  - 一筆公告 = 標案生命週期上的一個事件點
+  - AppendAnnouncement 命令據此推進 Tender 的 lifecycle_state
+  '''
+
+  Indexes {
+    (tender_id, tender_seq, ann_type) [unique]
+    (tender_id, ann_date)
+  }
+}
+
+Enum announcement_type {
+  招標公告
+  更正公告
+  決標公告
+  無法決標公告
+}
+
+// =====================================================================
+// Bounded Context: Vendor  (廠商 — 獨立聚合,可單獨查詢)
+// =====================================================================
+
+Table vendors {
+  tax_id    varchar(8) [pk, note: '統一編號 — 廠商全域識別']
+  name      varchar(255) [not null]
+  address   text
+
+  Note: 'Aggregate Root: Vendor — 以統編識別,可 join twtools/商業司加值'
+}
+
+Table vendor_awards {
+  id          uuid [pk]
+  vendor_tax_id varchar(8) [not null, ref: > vendors.tax_id]
+  tender_id   varchar(64) [not null, ref: > tenders.tender_id]
+  award_price bigint [not null, note: 'VO Money']
+  awarded_at  date [not null]
+
+  Note: '''
+  Entity — 廠商得標記錄 (餵養 VendorAwardsView / get_vendor_awards)
+  - 領域事件 VendorAwardRecorded 之投影
+  - 來源僅限 announcement_type = 決標公告
+  '''
+
+  Indexes {
+    vendor_tax_id
+    tender_id
+  }
+}
+
+// =====================================================================
+// Cross-cutting: Domain Event Store (event-driven 政策黏著)
+// =====================================================================
+
+Table domain_events {
+  id            uuid [pk]
+  aggregate_type varchar(40) [not null, note: 'Tender / Vendor']
+  aggregate_id  varchar(64) [not null]
+  event_type    varchar(60) [not null, note: 'TenderAwarded / TenderClassified …']
+  payload       jsonb [not null]
+  occurred_at   timestamp [not null]
+
+  Note: '事件存放;政策(policies)據此反應,見 event-storming.md §4'
+
+  Indexes {
+    (aggregate_type, aggregate_id)
+    event_type
+    occurred_at
+  }
+}
+
+// =====================================================================
+// Bounded Context: Ingestion  (擷取追蹤 — 增量更新 / 反爬節制)
+// =====================================================================
+
+Table fetch_log {
+  id          uuid [pk]
+  target      varchar(120) [not null, note: 'half_month_batch:{period} 或 detail:{caseNo}']
+  status      fetch_status [not null]
+  fetched_at  timestamp [not null]
+  http_status int
+
+  Note: '''
+  支援:
+  - 增量更新: 已抓過的 period/caseNo 不重抓 (反爬倫理 — 不全量重爬)
+  - 觀測性: 擷取成功率 / Cloudflare 擋阻偵測
+  '''
+
+  Indexes {
+    target [unique]
+    status
+  }
+}
+
+Enum fetch_status {
+  PENDING
+  SUCCESS
+  FAILED
+  BLOCKED [note: '被 Cloudflare/反爬擋下 — 觸發退避']
+}
+
+// =====================================================================
+// Value Objects (內嵌,無獨立表;此處為文件化說明)
+// =====================================================================
+// - Money(amount:bigint, currency='TWD')  → budget / base_price / award_price
+// - Category(code, name, domain_tag)        → tenders.category_code/domain_tag
+// - ProcurementProfile(attr, type, way)     → tenders.procurement_*
+// - TenderId(org_id, job_number)            → tenders.tender_id 自然鍵
