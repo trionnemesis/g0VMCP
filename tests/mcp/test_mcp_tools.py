@@ -34,6 +34,14 @@ async def test_search_tenders_tool(mcp) -> None:
     assert res.data[0].case_no == "3.79:1130108-5"
 
 
+# 場景: search_tenders 以狀態過濾找尚未決標(經 MCP tool)
+async def test_search_tenders_by_state_tool(mcp) -> None:
+    async with Client(mcp) as client:
+        res = await client.call_tool("search_tenders", {"state": "TENDERING"})
+    assert len(res.data) == 2
+    assert all(r.state == "TENDERING" for r in res.data)
+
+
 # 場景: get_tender_detail 回傳加值欄位(經 MCP tool)
 async def test_get_tender_detail_tool(mcp) -> None:
     async with Client(mcp) as client:

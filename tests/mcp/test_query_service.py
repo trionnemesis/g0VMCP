@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pytest
+
 from g0vmcp.mcp_server.service import TenderQueryService
 
 
@@ -18,6 +20,25 @@ async def test_search_tenders_filters_by_domain_and_budget(
     assert hit.domain_tag == "IT"
     assert hit.budget is not None and hit.budget >= 1_000_000
     assert hit.case_no == "3.79:1130108-5"
+
+
+# 場景: search_tenders 以生命週期狀態過濾(找尚未決標的標案)
+async def test_search_tenders_filters_by_state(
+    service: TenderQueryService,
+) -> None:
+    results = await service.search_tenders(state="TENDERING")
+
+    # fixture: 1 筆 AWARDED(it_big) + 2 筆 TENDERING(it_small, construction)
+    assert len(results) == 2
+    assert all(r.state == "TENDERING" for r in results)
+
+
+# 場景: search_tenders 傳入非法狀態值應拒絕
+async def test_search_tenders_rejects_invalid_state(
+    service: TenderQueryService,
+) -> None:
+    with pytest.raises(ValueError, match="invalid state"):
+        await service.search_tenders(state="NOT_A_STATE")
 
 
 # 場景: get_tender_detail 回傳加值欄位

@@ -120,6 +120,16 @@ async def test_search_by_domain_tag(conn):
     assert results[0].category.domain_tag == "IT"
 
 
+async def test_search_by_state(conn):
+    repo = SqliteTenderRepository(conn)
+    await repo.save(_make_tender(job_number="A-1", state=TenderState.TENDERING))
+    await repo.save(_make_tender(job_number="B-1", state=TenderState.AWARDED))
+
+    tendering = await repo.search(state="TENDERING")
+    assert [t.tender_id.job_number for t in tendering] == ["A-1"]
+    assert tendering[0].state is TenderState.TENDERING
+
+
 async def test_search_by_budget_range(conn):
     repo = SqliteTenderRepository(conn)
     await repo.save(_make_tender(job_number="A-1", budget=1_000_000))

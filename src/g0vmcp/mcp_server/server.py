@@ -27,17 +27,23 @@ def build_mcp(service: TenderQueryService) -> FastMCP:
         keyword: Optional[str] = None,
         domain_tag: Optional[str] = None,
         agency: Optional[str] = None,
+        state: Optional[str] = None,
         budget_min: Optional[int] = None,
         budget_max: Optional[int] = None,
         date_from: Optional[date] = None,
         date_to: Optional[date] = None,
         limit: int = 50,
     ) -> list[TenderSummaryView]:
-        """以關鍵字、分類、機關、日期、金額區間查詢標案。"""
+        """以關鍵字、分類、機關、生命週期狀態、日期、金額區間查詢標案。
+
+        state: 生命週期狀態,擇一 TENDERING(招標中/尚未決標)/AMENDED(更正)/
+            AWARDED(已決標)/FAILED(無法決標)。查「尚未決標」傳 state="TENDERING"。
+        """
         return await service.search_tenders(
             keyword=keyword,
             domain_tag=domain_tag,
             agency=agency,
+            state=state,
             budget_min=budget_min,
             budget_max=budget_max,
             date_from=date_from,

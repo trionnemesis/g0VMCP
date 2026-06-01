@@ -186,6 +186,7 @@ class TenderRepository(Protocol):
         keyword: Optional[str] = None,
         domain_tag: Optional[str] = None,
         agency: Optional[str] = None,
+        state: Optional[str] = None,
         budget_min: Optional[int] = None,
         budget_max: Optional[int] = None,
         date_from: Optional[date] = None,

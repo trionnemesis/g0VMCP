@@ -13,6 +13,7 @@ from typing import Optional
 from g0vmcp.contracts import (
     AnnouncementType,
     TenderRepository,
+    TenderState,
     VendorRepository,
 )
 
@@ -81,16 +82,23 @@ class TenderQueryService:
         keyword: Optional[str] = None,
         domain_tag: Optional[str] = None,
         agency: Optional[str] = None,
+        state: Optional[str] = None,
         budget_min: Optional[int] = None,
         budget_max: Optional[int] = None,
         date_from: Optional[date] = None,
         date_to: Optional[date] = None,
         limit: int = 50,
     ) -> list[TenderSummaryView]:
+        # state 對應生命週期(TENDERING/AMENDED/AWARDED/FAILED);非法值即時拒絕,
+        # 避免悄悄回空集合讓 client 誤判「查無此狀態標案」。
+        if state is not None and state not in TenderState.__members__:
+            valid = "/".join(TenderState.__members__)
+            raise ValueError(f"invalid state {state!r}; must be one of {valid}")
         tenders = await self._tenders.search(
             keyword=keyword,
             domain_tag=domain_tag,
             agency=agency,
+            state=state,
             budget_min=budget_min,
             budget_max=budget_max,
             date_from=date_from,
