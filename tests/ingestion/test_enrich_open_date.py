@@ -36,6 +36,8 @@ def test_extract_open_date_parses_roc_datetime(html: str):
     assert fields["open_date"] == datetime(2025, 5, 8, 10, 0)
     # 截止投標 114/05/07 17:00
     assert fields["bid_deadline"] == datetime(2025, 5, 7, 17, 0)
+    # 預算金額 1,437,749,369 元
+    assert fields["budget"] == 1_437_749_369
 
 
 def test_extract_returns_none_open_date_when_absent():

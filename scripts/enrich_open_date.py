@@ -19,6 +19,7 @@ import http.cookiejar
 import re
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -41,13 +42,23 @@ _UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
 )
 
-# 14 案中具招標公告者(其餘 9 案為限制性未公開評選,無開標時間)
+# 具招標公告(故明細頁有開標時間)的標案 —— 已決標 5 案 + 尚未決標 7 案。
+# 限制性招標(未經公開評選)無公開招標公告,不在此列,open_date 維持 NULL。
 TARGET_JOB_NUMBERS = [
+    # 已決標(AWARDED)
     "113TFDA-A-513",
     "113TFDA-S-501",
     "K1130690496",
     "M1413002",
     "W1130690262",
+    # 尚未決標(TENDERING)
+    "CY115008",
+    "KA115011",
+    "115-2-009",
+    "K1140665893",
+    "115TFDA-A-205",
+    "M1509239",
+    "M1522154",
 ]
 
 
@@ -75,6 +86,7 @@ def extract_open_fields(html: str) -> dict:
     return {
         "open_date": _parse_roc_datetime(f.get("開標時間", "")),
         "bid_deadline": _parse_roc_datetime(f.get("截止投標", "")),
+        "budget": _parse_money(f.get("預算金額", "")),
         "base_price": _parse_money(f.get("底價金額", "")),
         "bidder_count": _parse_int(f.get("投標廠商家數", "")),
     }
@@ -186,14 +198,25 @@ async def main(tender_repo) -> None:
         if tender is None:
             skipped.append((job, "not in DB"))
             continue
+        if tender.open_date is not None:
+            # 已回填過 → 跳過,避免重複請求觸發 PCC 速率限制(可重入)
+            skipped.append((job, "已有 open_date"))
+            continue
 
-        fields = fetch_open_date(job)
+        try:
+            fields = fetch_open_date(job)
+        except (urllib.error.URLError, OSError) as exc:
+            # 單一案網路逾時/被擋不應中斷整批;記下續跑,稍後重入即可補齊
+            skipped.append((job, f"網路錯誤: {exc}"))
+            continue
         if fields is None:
             skipped.append((job, "明細頁無開標時間"))
             continue
 
         tender.open_date = fields["open_date"]
         tender.bid_deadline = fields["bid_deadline"]
+        if fields["budget"] is not None and tender.budget is None:
+            tender.budget = Money(fields["budget"])
         if fields["base_price"] is not None and tender.base_price is None:
             tender.base_price = Money(fields["base_price"])
         if fields["bidder_count"] is not None:
@@ -205,7 +228,7 @@ async def main(tender_repo) -> None:
             f"  ✓ {job:<16} open_date={fields['open_date']:%Y-%m-%d %H:%M} "
             f"bid_deadline={_fmt(fields['bid_deadline'])}"
         )
-        time.sleep(0.5)
+        time.sleep(2.0)  # 案間禮貌間隔,降低觸發 PCC 速率限制機率
 
     print(f"\n更新 {updated} 筆;略過 {len(skipped)} 筆")
     for job, why in skipped:

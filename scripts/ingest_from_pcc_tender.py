@@ -3,8 +3,15 @@
 
 擷取範圍：衛生福利部體系（部本部 + 疾管署 / 食藥署 / 健保署 / 國健署 +
 所屬部立醫院、療養院、教養院、老人之家等，agency ILIKE '%衛生福利部%'）。
-資料列由 twinkle-hub `query_rows("pcc-tender", ...)` 查得（決標公告，近年依
-金額排序的代表性標案），欄位直接對應 Tender DTO，跳過 readBulletion（已需登入）。
+資料列由 twinkle-hub `query_rows("pcc-tender", ...)` 查得，欄位直接對應 Tender DTO。
+
+兩類資料：
+- PCC_ROWS：決標公告（state=AWARDED），近年依金額排序的代表性標案。
+- TENDER_ROWS：招標公告且「無對應決標公告」（state=TENDERING，進行中/尚未決標），
+  讓 search_tenders(state="TENDERING") 有實際資料可查。
+
+開標時間/截止投標/底價/預算等加值欄位 pcc-tender 不含，由 enrich_open_date.py
+從 web.pcc.gov.tw 明細頁回填（本腳本只建立 baseline）。
 
 使用方式: python3.11 scripts/ingest_from_pcc_tender.py
 """
@@ -204,6 +211,68 @@ PCC_ROWS = [
     },
 ]
 
+# 尚未決標的招標公告(由 query_rows("pcc-tender", announcement_type='招標公告') 查得,
+# 交叉比對確認「無對應決標公告」=進行中)。state=TENDERING,無得標廠商/決標金額;
+# 開標時間/截止投標/預算等加值欄位由 enrich_open_date.py 從明細頁回填。
+TENDER_ROWS = [
+    {
+        "job_number": "CY115008",
+        "agency": "衛生福利部疾病管制署",
+        "title": "「115年度培養基及抗血清等試劑耗材乙批」採購案",
+        "procurement_attr": "財物類",
+        "procurement_type": "公開招標",
+        "date": "2026-04-29",
+    },
+    {
+        "job_number": "KA115011",
+        "agency": "衛生福利部疾病管制署",
+        "title": "「115年核酸定序」採購案",
+        "procurement_attr": "勞務類",
+        "procurement_type": "公開招標",
+        "date": "2026-04-07",
+    },
+    {
+        "job_number": "115-2-009",
+        "agency": "衛生福利部國家中醫藥研究所",
+        "title": "奈米流式檢測儀1組",
+        "procurement_attr": "財物類",
+        "procurement_type": "公開招標",
+        "date": "2026-04-23",
+    },
+    {
+        "job_number": "K1140665893",
+        "agency": "衛生福利部中央健康保險署",
+        "title": "115年在宅醫療照護資訊平台規劃及專業技術服務案",
+        "procurement_attr": "勞務類",
+        "procurement_type": "經公開評選或公開徵求之限制性招標",
+        "date": "2026-03-25",
+    },
+    {
+        "job_number": "115TFDA-A-205",
+        "agency": "衛生福利部食品藥物管理署",
+        "title": "115年度「市售產品之乳酸菌抗藥特性分析」",
+        "procurement_attr": "勞務類",
+        "procurement_type": "經公開評選或公開徵求之限制性招標",
+        "date": "2026-03-24",
+    },
+    {
+        "job_number": "M1509239",
+        "agency": "衛生福利部",
+        "title": "115年度中英文網站維運及功能擴充案",
+        "procurement_attr": "勞務類",
+        "procurement_type": "經公開評選或公開徵求之限制性招標",
+        "date": "2026-03-03",
+    },
+    {
+        "job_number": "M1522154",
+        "agency": "衛生福利部",
+        "title": "115年文宣暨活動通路集中採購案",
+        "procurement_attr": "勞務類",
+        "procurement_type": "公開招標",
+        "date": "2026-02-03",
+    },
+]
+
 
 def _infer_domain(attr: str | None) -> str:
     if attr == "工程類":
@@ -264,6 +333,41 @@ def _row_to_tender(row: dict) -> Tender:
     )
 
 
+def _tender_row_to_tender(row: dict) -> Tender:
+    """招標公告(尚未決標)→ TENDERING tender;無得標廠商/決標金額。"""
+    domain = _infer_domain(row.get("procurement_attr"))
+    return Tender(
+        tender_id=TenderId(org_id="", job_number=row["job_number"]),
+        agency=row["agency"],
+        title=row["title"],
+        state=TenderState.TENDERING,
+        announcements=[
+            Announcement(
+                ann_type=AnnouncementType.TENDER,
+                ann_date=date.fromisoformat(row["date"]),
+                tender_seq="01",
+                source_url=None,
+                payload={},
+            )
+        ],
+        budget=None,
+        open_date=None,
+        bid_deadline=None,
+        base_price=None,
+        bidder_count=None,
+        category=Category(
+            code="pcc-tender",
+            name=row.get("procurement_attr", ""),
+            domain_tag=domain,
+        ),
+        procurement=ProcurementProfile(
+            attr=row.get("procurement_attr"),
+            type=row.get("procurement_type"),
+            way=None,
+        ),
+    )
+
+
 async def main(tender_repo) -> None:
     # clear existing data
     await tender_repo._conn.execute("DELETE FROM vendor_awards")
@@ -271,12 +375,19 @@ async def main(tender_repo) -> None:
     await tender_repo._conn.execute("DELETE FROM announcements")
     await tender_repo._conn.execute("DELETE FROM tenders")
     await tender_repo._conn.commit()
-    print(f"清除舊資料，準備寫入 {len(PCC_ROWS)} 筆")
+    print(
+        f"清除舊資料，準備寫入 {len(PCC_ROWS)} 筆決標 + "
+        f"{len(TENDER_ROWS)} 筆尚未決標"
+    )
 
     for row in PCC_ROWS:
         tender = _row_to_tender(row)
         await tender_repo.save(tender)
-        print(f"  saved {tender.tender_id!s:<30} {tender.agency[:30]}")
+        print(f"  saved {tender.tender_id!s:<30} {tender.state.value:<10} {tender.agency[:24]}")
+    for row in TENDER_ROWS:
+        tender = _tender_row_to_tender(row)
+        await tender_repo.save(tender)
+        print(f"  saved {tender.tender_id!s:<30} {tender.state.value:<10} {tender.agency[:24]}")
 
     print("\n=== DB 現況 ===")
     results = await tender_repo.search(limit=20)
