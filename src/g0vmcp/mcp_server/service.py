@@ -30,6 +30,8 @@ class TenderSummaryView:
     domain_tag: Optional[str]
     budget: Optional[int]
     state: str
+    open_date: Optional[datetime]
+    bid_deadline: Optional[datetime]
 
 
 @dataclass(frozen=True)
@@ -113,6 +115,8 @@ class TenderQueryService:
                 domain_tag=t.category.domain_tag if t.category else None,
                 budget=t.budget.amount if t.budget else None,
                 state=t.state.value,
+                open_date=t.open_date,
+                bid_deadline=t.bid_deadline,
             )
             for t in tenders
         ]

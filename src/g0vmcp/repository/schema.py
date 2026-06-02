@@ -67,6 +67,14 @@ CREATE TABLE IF NOT EXISTS vendor_awards (
 
 CREATE INDEX IF NOT EXISTS idx_vendor_awards_tax_id ON vendor_awards (vendor_tax_id);
 CREATE INDEX IF NOT EXISTS idx_vendor_awards_tender ON vendor_awards (tender_id);
+
+CREATE TABLE IF NOT EXISTS fetch_log (
+    job_number   TEXT PRIMARY KEY,
+    status       TEXT NOT NULL DEFAULT 'PENDING',
+    last_attempt TEXT,
+    error_msg    TEXT,
+    retry_after  TEXT
+);
 """
 
 

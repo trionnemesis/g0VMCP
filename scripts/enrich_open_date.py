@@ -46,6 +46,10 @@ _UA = (
 MAX_PER_RUN = 30  # 每次執行最多補爬數量，避免觸發速率限制
 
 
+class _RateLimitedError(Exception):
+    """PCC 計時閘門重試耗盡 → 觸發 BLOCKED 退避。"""
+
+
 def parse_detail_fields(html: str) -> dict[str, str]:
     """明細頁 label/value 皆為 <td> → {label: value}(首見為準)。
 
@@ -116,9 +120,11 @@ def _http_get(url: str) -> str:
         if not _is_gate(html):
             return html
         if not _pass_gate(html):
-            break
+            # 找不到驗證 URL → PCC 結構異常,非速率封鎖,直接回傳
+            return html
         html = _raw_get(url)
-    return html
+    # 重試耗盡仍是閘門頁 → 確定被速率封鎖
+    raise _RateLimitedError(f"rate-limited after {_GATE_MAX_RETRY} gate retries: {url}")
 
 
 def _http_post(url: str, data: dict) -> str:
@@ -174,15 +180,65 @@ def fetch_open_date(job_number: str) -> Optional[dict]:
     return None
 
 
+async def _fetch_log_upsert(
+    conn,
+    job_number: str,
+    status: str,
+    error_msg: Optional[str] = None,
+    retry_hours: int = 0,
+) -> None:
+    """寫入/更新 fetch_log 一筆。retry_hours>0 時計算 retry_after。"""
+    retry_after: Optional[str] = None
+    if retry_hours > 0:
+        from datetime import timedelta
+        retry_after = (datetime.utcnow() + timedelta(hours=retry_hours)).isoformat()
+    await conn.execute(
+        """
+        INSERT INTO fetch_log (job_number, status, last_attempt, error_msg, retry_after)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(job_number) DO UPDATE SET
+            status=excluded.status,
+            last_attempt=excluded.last_attempt,
+            error_msg=excluded.error_msg,
+            retry_after=excluded.retry_after
+        """,
+        (job_number, status, datetime.utcnow().isoformat(), error_msg, retry_after),
+    )
+    await conn.commit()
+
+
+async def _is_blocked(conn, job_number: str) -> bool:
+    """BLOCKED 且 retry_after 未到 → True(跳過本次)。"""
+    cur = await conn.execute(
+        "SELECT status, retry_after FROM fetch_log WHERE job_number = ?",
+        (job_number,),
+    )
+    row = await cur.fetchone()
+    if row is None:
+        return False
+    status, retry_after = row[0], row[1]
+    if status != "BLOCKED":
+        return False
+    if retry_after is None:
+        return True
+    return datetime.utcnow().isoformat() < retry_after
+
+
 async def main(tender_repo) -> None:
-    # 動態查詢：補爬 open_date 尚未填入且非限制性招標（限制性招標無公開明細頁）的標案
+    # 補爬 open_date IS NULL 的公開招標；BLOCKED 案透過 fetch_log 子查詢排除
     cur = await tender_repo._conn.execute(
         """
-        SELECT job_number FROM tenders
-        WHERE open_date IS NULL
+        SELECT t.job_number FROM tenders t
+        LEFT JOIN fetch_log fl ON fl.job_number = t.job_number
+        WHERE t.open_date IS NULL
           AND (
-            procurement_type NOT LIKE '%限制性招標(未經公開評選%'
-            OR procurement_type IS NULL
+            t.procurement_type NOT LIKE '%限制性招標(未經公開評選%'
+            OR t.procurement_type IS NULL
+          )
+          AND NOT (
+            fl.status = 'BLOCKED'
+            AND fl.retry_after IS NOT NULL
+            AND fl.retry_after > strftime('%Y-%m-%dT%H:%M:%S', 'now')
           )
         LIMIT ?
         """,
@@ -192,7 +248,7 @@ async def main(tender_repo) -> None:
     job_numbers = [row[0] for row in rows]
 
     if not job_numbers:
-        print("所有公開招標標案 open_date 已補齊，無需爬取。")
+        print("所有公開招標標案 open_date 已補齊（或全為 BLOCKED），無需爬取。")
         return
 
     print(f"待補爬標案：{len(job_numbers)} 筆（上限 {MAX_PER_RUN}）")
@@ -204,17 +260,23 @@ async def main(tender_repo) -> None:
             skipped.append((job, "not in DB"))
             continue
         if tender.open_date is not None:
-            # 已回填過 → 跳過,避免重複請求觸發 PCC 速率限制(可重入)
             skipped.append((job, "已有 open_date"))
             continue
 
         try:
             fields = fetch_open_date(job)
+        except _RateLimitedError as exc:
+            # PCC 閘門重試耗盡 → BLOCKED，4 小時後再試
+            await _fetch_log_upsert(tender_repo._conn, job, "BLOCKED", str(exc), retry_hours=4)
+            skipped.append((job, f"封鎖(BLOCKED 4h): {exc}"))
+            print(f"  ⛔ {job}: 速率封鎖，退避 4 小時")
+            break  # 停止本次整批，避免繼續觸發封鎖
         except (urllib.error.URLError, OSError) as exc:
-            # 單一案網路逾時/被擋不應中斷整批;記下續跑,稍後重入即可補齊
+            await _fetch_log_upsert(tender_repo._conn, job, "FAILED", str(exc))
             skipped.append((job, f"網路錯誤: {exc}"))
             continue
         if fields is None:
+            await _fetch_log_upsert(tender_repo._conn, job, "FAILED", "明細頁無開標時間")
             skipped.append((job, "明細頁無開標時間"))
             continue
 
@@ -228,12 +290,13 @@ async def main(tender_repo) -> None:
             tender.bidder_count = fields["bidder_count"]
 
         await tender_repo.save(tender)
+        await _fetch_log_upsert(tender_repo._conn, job, "SUCCESS")
         updated += 1
         print(
             f"  ✓ {job:<16} open_date={fields['open_date']:%Y-%m-%d %H:%M} "
             f"bid_deadline={_fmt(fields['bid_deadline'])}"
         )
-        time.sleep(2.0)  # 案間禮貌間隔,降低觸發 PCC 速率限制機率
+        time.sleep(2.0)
 
     print(f"\n更新 {updated} 筆;略過 {len(skipped)} 筆")
     for job, why in skipped:

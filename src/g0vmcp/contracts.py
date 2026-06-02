@@ -24,6 +24,7 @@ class TenderState(str, Enum):
     AMENDED = "AMENDED"
     AWARDED = "AWARDED"
     FAILED = "FAILED"
+    STALE = "STALE"       # 超過 180 天無決標公告 → 自動標記
 
 
 class AnnouncementType(str, Enum):

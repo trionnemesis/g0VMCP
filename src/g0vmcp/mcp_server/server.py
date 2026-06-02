@@ -37,7 +37,8 @@ def build_mcp(service: TenderQueryService) -> FastMCP:
         """以關鍵字、分類、機關、生命週期狀態、日期、金額區間查詢標案。
 
         state: 生命週期狀態,擇一 TENDERING(招標中/尚未決標)/AMENDED(更正)/
-            AWARDED(已決標)/FAILED(無法決標)。查「尚未決標」傳 state="TENDERING"。
+            AWARDED(已決標)/FAILED(無法決標)/STALE(超過180天無決標)。
+            查「尚未決標」傳 state="TENDERING"。
         """
         return await service.search_tenders(
             keyword=keyword,
