@@ -18,6 +18,7 @@ import html as _htmllib
 import http.cookiejar
 import re
 import sys
+import random
 import time
 import urllib.error
 import urllib.parse
@@ -42,24 +43,7 @@ _UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
 )
 
-# 具招標公告(故明細頁有開標時間)的標案 —— 已決標 5 案 + 尚未決標 7 案。
-# 限制性招標(未經公開評選)無公開招標公告,不在此列,open_date 維持 NULL。
-TARGET_JOB_NUMBERS = [
-    # 已決標(AWARDED)
-    "113TFDA-A-513",
-    "113TFDA-S-501",
-    "K1130690496",
-    "M1413002",
-    "W1130690262",
-    # 尚未決標(TENDERING)
-    "CY115008",
-    "KA115011",
-    "115-2-009",
-    "K1140665893",
-    "115TFDA-A-205",
-    "M1509239",
-    "M1522154",
-]
+MAX_PER_RUN = 30  # 每次執行最多補爬數量，避免觸發速率限制
 
 
 def parse_detail_fields(html: str) -> dict[str, str]:
@@ -186,14 +170,35 @@ def fetch_open_date(job_number: str) -> Optional[dict]:
         fields = extract_open_fields(_http_get(f"{_BASE}{href}"))
         if fields["open_date"] is not None:
             return fields
-        time.sleep(0.5)  # 禮貌間隔
+        time.sleep(random.uniform(0.3, 1.2))  # jitter 禮貌間隔，避免固定節奏觸發速率限制
     return None
 
 
 async def main(tender_repo) -> None:
+    # 動態查詢：補爬 open_date 尚未填入且非限制性招標（限制性招標無公開明細頁）的標案
+    cur = await tender_repo._conn.execute(
+        """
+        SELECT job_number FROM tenders
+        WHERE open_date IS NULL
+          AND (
+            procurement_type NOT LIKE '%限制性招標(未經公開評選%'
+            OR procurement_type IS NULL
+          )
+        LIMIT ?
+        """,
+        (MAX_PER_RUN,),
+    )
+    rows = await cur.fetchall()
+    job_numbers = [row[0] for row in rows]
+
+    if not job_numbers:
+        print("所有公開招標標案 open_date 已補齊，無需爬取。")
+        return
+
+    print(f"待補爬標案：{len(job_numbers)} 筆（上限 {MAX_PER_RUN}）")
     updated, skipped = 0, []
 
-    for job in TARGET_JOB_NUMBERS:
+    for job in job_numbers:
         tender = await tender_repo.get(f":{job}")
         if tender is None:
             skipped.append((job, "not in DB"))

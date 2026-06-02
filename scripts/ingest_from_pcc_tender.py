@@ -369,22 +369,22 @@ def _tender_row_to_tender(row: dict) -> Tender:
 
 
 async def main(tender_repo) -> None:
-    # clear existing data
-    await tender_repo._conn.execute("DELETE FROM vendor_awards")
-    await tender_repo._conn.execute("DELETE FROM vendors")
-    await tender_repo._conn.execute("DELETE FROM announcements")
-    await tender_repo._conn.execute("DELETE FROM tenders")
-    await tender_repo._conn.commit()
     print(
-        f"清除舊資料，準備寫入 {len(PCC_ROWS)} 筆決標 + "
-        f"{len(TENDER_ROWS)} 筆尚未決標"
+        f"UPSERT 寫入 {len(PCC_ROWS)} 筆決標 + "
+        f"{len(TENDER_ROWS)} 筆尚未決標（保留已有的 open_date / bid_deadline）"
     )
+
+    # 已決標 job_number 集合 — 避免 TENDERING 覆寫已決標的 state
+    awarded_job_numbers = {row["job_number"] for row in PCC_ROWS}
 
     for row in PCC_ROWS:
         tender = _row_to_tender(row)
         await tender_repo.save(tender)
         print(f"  saved {tender.tender_id!s:<30} {tender.state.value:<10} {tender.agency[:24]}")
     for row in TENDER_ROWS:
+        if row["job_number"] in awarded_job_numbers:
+            print(f"  skip  {row['job_number']:<30} (已決標，略過 TENDERING 覆寫)")
+            continue
         tender = _tender_row_to_tender(row)
         await tender_repo.save(tender)
         print(f"  saved {tender.tender_id!s:<30} {tender.state.value:<10} {tender.agency[:24]}")
