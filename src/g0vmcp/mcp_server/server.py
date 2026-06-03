@@ -10,6 +10,7 @@ from typing import Optional
 
 from fastmcp import FastMCP
 
+from g0vmcp import __version__
 from g0vmcp.mcp_server.service import (
     LifecycleEntryView,
     TenderDetailView,
@@ -20,7 +21,15 @@ from g0vmcp.mcp_server.service import (
 
 
 def build_mcp(service: TenderQueryService) -> FastMCP:
-    mcp: FastMCP = FastMCP("g0vmcp")
+    mcp: FastMCP = FastMCP(
+        "g0vmcp",
+        version=__version__,
+        instructions=(
+            "政府採購標案情報 MCP — 查詢衛福部資訊服務類標案。"
+            "提供搜尋、明細、生命週期時間線、廠商得標記錄等工具。"
+            "資料來源：政府電子採購網 (web.pcc.gov.tw)。"
+        ),
+    )
 
     @mcp.tool
     async def search_tenders(

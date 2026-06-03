@@ -1,7 +1,8 @@
-"""啟動進入點:`python -m g0vmcp.mcp_server`(stdio transport)。
+"""啟動進入點:`g0vmcp` 或 `python -m g0vmcp.mcp_server`。
 
-DB 路徑解析順序:環境變數 `G0VMCP_DB` > 專案根/g0vmcp.db(絕對路徑)。
-Why 絕對路徑:Claude Code 會以任意 cwd spawn 此 server,相對路徑會指向錯誤位置。
+DB 路徑解析順序:
+  1. 環境變數 G0VMCP_DB
+  2. 預設 ~/.g0vmcp/g0vmcp.db（自動建目錄;pip install 後可用）
 """
 from __future__ import annotations
 
@@ -16,17 +17,26 @@ def _resolve_db_path() -> str:
     env = os.environ.get("G0VMCP_DB")
     if env:
         return env
-    # src/g0vmcp/mcp_server/__main__.py → parents[3] = 專案根
-    return str(Path(__file__).resolve().parents[3] / "g0vmcp.db")
+    data_dir = Path.home() / ".g0vmcp"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return str(data_dir / "g0vmcp.db")
 
 
 def main() -> None:
     from g0vmcp.repository import build_repositories
 
-    tender_repo, vendor_repo = build_repositories(_resolve_db_path())
+    db_path = _resolve_db_path()
+    tender_repo, vendor_repo = build_repositories(db_path)
     service = TenderQueryService(tender_repo, vendor_repo)
     mcp = build_mcp(service)
-    mcp.run()
+
+    transport = os.environ.get("G0VMCP_TRANSPORT", "stdio")
+    if transport == "sse":
+        host = os.environ.get("G0VMCP_HOST", "0.0.0.0")
+        port = int(os.environ.get("G0VMCP_PORT", "8000"))
+        mcp.run(transport="sse", host=host, port=port)
+    else:
+        mcp.run()
 
 
 if __name__ == "__main__":

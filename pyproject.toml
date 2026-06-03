@@ -1,13 +1,24 @@
 [project]
 name = "g0vmcp"
 version = "0.1.0"
-description = "政府採購標案情報聚合 MCP — 補完 pcc-tender 缺漏欄位 (B 方案)"
+description = "政府採購標案情報聚合 MCP — 衛福部資訊服務類標案查詢"
 requires-python = ">=3.11"
+license = "MIT"
+readme = "README.md"
+authors = [{ name = "g0v contributors" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Office/Business",
+]
 dependencies = [
     "fastmcp>=0.2.0",
     "httpx>=0.27",
-    "selectolax>=0.3",      # 明細頁 HTML 解析 (任務①)
-    "aiosqlite>=0.20",      # 儲存層 (任務②)
+    "selectolax>=0.3",
+    "aiosqlite>=0.20",
 ]
 
 [project.optional-dependencies]
@@ -15,6 +26,15 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
 ]
+
+[project.scripts]
+g0vmcp = "g0vmcp.mcp_server.__main__:main"
+g0vmcp-sync = "g0vmcp.cli:sync_main"
+g0vmcp-enrich = "g0vmcp.cli:enrich_main"
+g0vmcp-purge = "g0vmcp.cli:purge_main"
+
+[project.urls]
+Repository = "https://github.com/g0v/g0vmcp"
 
 [build-system]
 requires = ["hatchling"]

@@ -91,13 +91,10 @@ class TenderQueryService:
         date_to: Optional[date] = None,
         limit: int = 50,
     ) -> list[TenderSummaryView]:
-        # state 對應生命週期(TENDERING/AMENDED/AWARDED/FAILED);非法值即時拒絕,
-        # 避免悄悄回空集合讓 client 誤判「查無此狀態標案」。
         if state is not None and state not in TenderState.__members__:
             valid = "/".join(TenderState.__members__)
             raise ValueError(f"invalid state {state!r}; must be one of {valid}")
-        # 資料範圍護欄:本 MCP 聚焦衛福部資訊服務類。未指定 domain_tag 時預設 IT,
-        # 避免回出非 IT 雜訊;呼叫端明確傳其他值(除錯用)仍尊重。
+        limit = min(limit, 200)
         if domain_tag is None:
             domain_tag = "IT"
         tenders = await self._tenders.search(
