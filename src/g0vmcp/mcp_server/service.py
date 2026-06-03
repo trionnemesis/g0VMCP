@@ -32,6 +32,8 @@ class TenderSummaryView:
     state: str
     open_date: Optional[datetime]
     bid_deadline: Optional[datetime]
+    procurement_type: Optional[str] = None
+    award_way: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,9 @@ class TenderDetailView:
     bidder_count: Optional[int]
     category_code: Optional[str]
     domain_tag: Optional[str]
+    procurement_attr: Optional[str] = None
+    procurement_type: Optional[str] = None
+    award_way: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -118,6 +123,8 @@ class TenderQueryService:
                 state=t.state.value,
                 open_date=t.open_date,
                 bid_deadline=t.bid_deadline,
+                procurement_type=t.procurement.type if t.procurement else None,
+                award_way=t.procurement.way if t.procurement else None,
             )
             for t in tenders
         ]
@@ -139,6 +146,9 @@ class TenderQueryService:
             bidder_count=tender.bidder_count,
             category_code=tender.category.code if tender.category else None,
             domain_tag=tender.category.domain_tag if tender.category else None,
+            procurement_attr=tender.procurement.attr if tender.procurement else None,
+            procurement_type=tender.procurement.type if tender.procurement else None,
+            award_way=tender.procurement.way if tender.procurement else None,
         )
 
     async def get_tender_lifecycle(self, case_no: str) -> list[LifecycleEntryView]:

@@ -44,7 +44,7 @@ def _halfmonth_periods(months_back: int, today: date) -> list[tuple[int, int, in
     return periods
 
 
-async def _sync(args: argparse.Namespace) -> None:
+async def _sync(tender_repo, db_path: str, args: argparse.Namespace) -> None:
     from g0vmcp.ingestion.cf_http import CloudflareAwareHttpGetter
     from g0vmcp.ingestion.fetch_log import FetchLog
     from g0vmcp.ingestion.opendata import (
@@ -54,10 +54,7 @@ async def _sync(args: argparse.Namespace) -> None:
         tender_xml_url,
     )
     from g0vmcp.ingestion.pipeline import IngestionPipeline
-    from g0vmcp.repository import build_repositories
 
-    db_path = _resolve_db(args.db)
-    tender_repo, _ = build_repositories(db_path)
     getter = CloudflareAwareHttpGetter()
     fetch_log = FetchLog(_resolve_fetch_log(db_path))
     pipe = IngestionPipeline(repo=tender_repo, fetch_log=fetch_log)
@@ -107,6 +104,8 @@ async def _sync(args: argparse.Namespace) -> None:
 
 
 def sync_main() -> None:
+    from g0vmcp.repository import build_repositories
+
     parser = argparse.ArgumentParser(
         prog="g0vmcp-sync",
         description="從政府採購網半月 XML 同步標案 baseline 資料",
@@ -115,20 +114,20 @@ def sync_main() -> None:
     parser.add_argument("--tender-months", type=int, default=3, help="招標回溯月數")
     parser.add_argument("--award-months", type=int, default=24, help="決標回溯月數")
     args = parser.parse_args()
-    asyncio.run(_sync(args))
+
+    db_path = _resolve_db(args.db)
+    tender_repo, _ = build_repositories(db_path)
+    asyncio.run(_sync(tender_repo, db_path, args))
 
 
 # ── enrich ───────────────────────────────────────────────────────────────
 
-async def _enrich(args: argparse.Namespace) -> None:
+async def _enrich(tender_repo, db_path: str, args: argparse.Namespace) -> None:
     from g0vmcp.ingestion.cf_http import CloudflareAwareHttpGetter
     from g0vmcp.ingestion.fetch_log import FetchLog
     from g0vmcp.ingestion.fetcher import PccHttpFetcher
     from g0vmcp.ingestion.pipeline import IngestionPipeline
-    from g0vmcp.repository import build_repositories
 
-    db_path = _resolve_db(args.db)
-    tender_repo, _ = build_repositories(db_path)
     fetcher = PccHttpFetcher(CloudflareAwareHttpGetter())
     fetch_log = FetchLog(_resolve_fetch_log(db_path))
     pipe = IngestionPipeline(repo=tender_repo, fetch_log=fetch_log, fetcher=fetcher)
@@ -150,6 +149,8 @@ async def _enrich(args: argparse.Namespace) -> None:
 
 
 def enrich_main() -> None:
+    from g0vmcp.repository import build_repositories
+
     parser = argparse.ArgumentParser(
         prog="g0vmcp-enrich",
         description="從明細頁補 CPC 碼與加值欄位",
@@ -157,7 +158,10 @@ def enrich_main() -> None:
     parser.add_argument("--db", help="SQLite DB 路徑（預設 ~/.g0vmcp/g0vmcp.db）")
     parser.add_argument("--batch-size", type=int, default=30, help="每批爬取上限")
     args = parser.parse_args()
-    asyncio.run(_enrich(args))
+
+    db_path = _resolve_db(args.db)
+    tender_repo, _ = build_repositories(db_path)
+    asyncio.run(_enrich(tender_repo, db_path, args))
 
 
 # ── purge ────────────────────────────────────────────────────────────────
