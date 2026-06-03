@@ -2,6 +2,13 @@
 // g0VMCP 領域模型 (DDD) — 政府採購標案情報聚合
 // 來源需求: B 方案架構 (自架擷取後端補完 pcc-tender 缺漏欄位)
 // 對照: spec/event-storming.md / spec/features/*.feature
+//
+// 範圍 (Scope): 本系統只收「衛生福利部及其轄下機關 (agency 以「衛生福利部」開頭,
+//   涵蓋疾管署/食藥署/健保署/國健署/社家署/部立醫院等) ∩ 資訊服務類」標案。
+//   資訊服務類 = 官方標的分類 CPC 碼前綴 45 (計算機) / 84 (電腦服務) / 47 (通訊)。
+// 資料源: web.pcc.gov.tw 半月公開資料 XML (OpenData/downloadFile,動態下載) —
+//   招標 tender_*.xml + 決標 award_*.xml。半月 XML 僅 6 欄、無標的分類碼,
+//   故採兩階段: ① baseline 落庫 (關鍵字初篩暫定 IT) → ② 明細頁補 CPC 碼精確確認。
 // =====================================================================
 
 // =====================================================================
@@ -10,7 +17,7 @@
 
 Table tenders {
   tender_id   varchar(64) [pk, note: '複合自然鍵: org_id + ":" + job_number']
-  org_id      varchar(32) [not null, note: '採購網機關代碼 orgId — pcc-tender 缺此欄,須由明細擷取補上']
+  org_id      varchar(32) [not null, note: '採購網機關代碼 orgId — 半月 XML 無此欄;baseline 階段為空,enrich 時由 readTenderBasic 反查補上 (補上後 tender_id 換鍵,見 rekey)']
   job_number  varchar(64) [not null, note: '標案案號 caseNo']
   agency      varchar(255) [not null]
   title       text [not null]
@@ -29,8 +36,10 @@ Table tenders {
   award_way        varchar(40) [note: '最低標/最有利標…(決標方式)']
 
   // --- 分類 (由 Classification BC 寫入) ---
-  category_code varchar(20) [note: '官方標的分類碼']
-  domain_tag    varchar(20) [note: '衍生領域標籤: IT/工程/醫療… (取代標題 ILIKE)']
+  category_code varchar(20) [note: '官方標的分類 CPC 碼 (明細頁取得). 資訊服務=前綴 45/84/47. baseline 階段為空字串']
+  category_name varchar(60) [note: '標的分類中文描述 (如「勞務類 842 - 軟體執行服務」)']
+  domain_tag    varchar(20) [note: '衍生領域標籤: IT/工程/醫療/清潔… 由 CPC 碼前綴對照 (取代標題 ILIKE)']
+  category_method varchar(20) [note: 'official_code (CPC 碼確認) | llm_fallback (baseline 暫定 IT,待 enrich)']
 
   first_seen_at timestamp [not null]
   updated_at    timestamp [not null]
@@ -62,6 +71,7 @@ Enum tender_state {
   AMENDED   [note: '已更正(仍招標中)']
   AWARDED   [note: '已決標 — 終局']
   FAILED    [note: '無法決標 — 終局']
+  STALE     [note: '超過 180 天無決標公告 → 由 mark_stale 自動標記']
 }
 
 Table announcements {
@@ -152,15 +162,17 @@ Table domain_events {
 
 Table fetch_log {
   id          uuid [pk]
-  target      varchar(120) [not null, note: 'half_month_batch:{period} 或 detail:{caseNo}']
+  target      varchar(120) [not null, note: 'enrich 目標案號 (job_number);獨立 fetch_log.db,不與 g0vmcp.db 混用']
   status      fetch_status [not null]
   fetched_at  timestamp [not null]
   http_status int
+  retry_after timestamp [note: 'BLOCKED 退避截止時間;未到則 should_fetch=False,支撐漸進補完']
 
   Note: '''
   支援:
-  - 增量更新: 已抓過的 period/caseNo 不重抓 (反爬倫理 — 不全量重爬)
-  - 觀測性: 擷取成功率 / Cloudflare 擋阻偵測
+  - 增量更新: 已 SUCCESS 的案號不重抓 (反爬倫理 — 不全量重爬)
+  - 退避: BLOCKED 設 retry_after (預設 +4h),退避期內跳過,中止本批避免封鎖風暴
+  - 觀測性: 擷取成功率 / Cloudflare 計時閘門偵測
   '''
 
   Indexes {
@@ -179,7 +191,7 @@ Enum fetch_status {
 // =====================================================================
 // Value Objects (內嵌,無獨立表;此處為文件化說明)
 // =====================================================================
-// - Money(amount:bigint, currency='TWD')  → budget / base_price / award_price
-// - Category(code, name, domain_tag)        → tenders.category_code/domain_tag
-// - ProcurementProfile(attr, type, way)     → tenders.procurement_*
-// - TenderId(org_id, job_number)            → tenders.tender_id 自然鍵
+// - Money(amount:bigint, currency='TWD')        → budget / base_price / award_price
+// - Category(code, name, domain_tag, method)    → tenders.category_*
+// - ProcurementProfile(attr, type, way)         → tenders.procurement_*
+// - TenderId(org_id, job_number)                → tenders.tender_id 自然鍵
