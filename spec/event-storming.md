@@ -11,8 +11,10 @@
 twinkle-hub `pcc-tender` 只吃官方半月 OpenData 摘要(21 欄),實證缺:
 **預算/公告金額、開標時間、截止投標日、標的細分類碼、投標廠商家數、底價、附件**;
 且 `detail_url`/`agency_id` 全 162,189 筆皆空 → 無法當「發現層→明細層」的橋。
-本系統(B 方案)自架擷取後端,直接抓 `web.pcc.gov.tw` 明細頁補完這些欄位,
-並用**官方標的分類碼**做乾淨分類(取代標題 ILIKE 的雜訊)。
+本系統(B 方案)自架擷取後端,動態下載 `web.pcc.gov.tw` 半月公開資料 XML,
+再抓明細頁補完這些欄位,並用**官方標的分類 CPC 碼**(45/84/47=資訊服務)做乾淨
+分類(取代標題 ILIKE 的雜訊)。範圍聚焦**衛生福利部及轄下機關 ∩ 資訊服務類**,
+半月 XML 無分類碼故採兩階段:baseline 關鍵字初篩暫定 → 明細頁 CPC 碼精確確認。
 
 ---
 
@@ -95,6 +97,9 @@ flowchart LR
 3. **當** `AnnouncementAppended(type=決標)` **則** `RecordVendorAward`
 4. **當** `TenderRegistered` 或 `TenderAmended` **則** `ClassifyTender`
 5. **當** 半月 OpenData 新釋出 **則** diff 出新案號 → `FetchHalfMonthBatch`(增量更新)
+6. **當** baseline 落庫前 **則** scope 過濾(機關非衛福部 / 標題黑名單 → 剔除;通過者暫定 IT、待 CPC 確認)
+7. **當** `TenderClassified` 且 CPC 碼非資訊服務(非 45/84/47) **則** 標記範圍外(待 purge 剔除)
+8. **當** TENDERING 逾 180 天無決標 **則** 標記 STALE(時間驅動維運,mark_stale)
 
 ---
 

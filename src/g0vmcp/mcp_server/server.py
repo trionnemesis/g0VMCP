@@ -10,6 +10,7 @@ from typing import Optional
 
 from fastmcp import FastMCP
 
+from g0vmcp import __version__
 from g0vmcp.mcp_server.service import (
     LifecycleEntryView,
     TenderDetailView,
@@ -20,7 +21,15 @@ from g0vmcp.mcp_server.service import (
 
 
 def build_mcp(service: TenderQueryService) -> FastMCP:
-    mcp: FastMCP = FastMCP("g0vmcp")
+    mcp: FastMCP = FastMCP(
+        "g0vmcp",
+        version=__version__,
+        instructions=(
+            "政府採購標案情報 MCP — 查詢衛福部資訊服務類標案。"
+            "提供搜尋、明細、生命週期時間線、廠商得標記錄等工具。"
+            "資料來源：政府電子採購網 (web.pcc.gov.tw)。"
+        ),
+    )
 
     @mcp.tool
     async def search_tenders(
@@ -35,6 +44,9 @@ def build_mcp(service: TenderQueryService) -> FastMCP:
         limit: int = 50,
     ) -> list[TenderSummaryView]:
         """以關鍵字、分類、機關、生命週期狀態、日期、金額區間查詢標案。
+
+        本 MCP 資料範圍 = 衛生福利部及轄下機關的「資訊服務類」標案。
+        domain_tag 預設 IT:未指定時只回資訊服務類;傳其他值(除錯用)仍尊重。
 
         state: 生命週期狀態,擇一 TENDERING(招標中/尚未決標)/AMENDED(更正)/
             AWARDED(已決標)/FAILED(無法決標)/STALE(超過180天無決標)。

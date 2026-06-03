@@ -32,9 +32,9 @@ class _StubLlm:
         return self._tag
 
 
-# 場景: 以官方分類碼歸入 IT 領域
+# 場景: 以官方分類碼歸入 IT 領域(CPC 45 = 計算機及週邊)
 def test_classify_it_by_official_code():
-    tender = _tender(title="資訊系統建置", category_code="31050")
+    tender = _tender(title="資訊系統建置", category_code="4523")
     category = classify(tender)
 
     assert category.domain_tag == "IT"
@@ -70,4 +70,31 @@ def test_unknown_code_maps_to_other_via_official_code():
     category = classify(tender)
 
     assert category.domain_tag == "其他"
+    assert category.method == "official_code"
+
+
+# CPC 真實碼:45/84/47 三類皆歸 IT
+def test_cpc_computer_peripherals_code_is_it():
+    category = classify(_tender(title="伺服器採購", category_code="4523"))
+    assert category.domain_tag == "IT"
+    assert category.method == "official_code"
+
+
+def test_cpc_computer_services_code_is_it():
+    category = classify(_tender(title="系統維護服務", category_code="8421"))
+    assert category.domain_tag == "IT"
+    assert category.method == "official_code"
+
+
+def test_cpc_telecom_equipment_code_is_it():
+    category = classify(_tender(title="通訊設備採購", category_code="4712"))
+    assert category.domain_tag == "IT"
+    assert category.method == "official_code"
+
+
+# CPC 5159(其他專業工程,真實 live fixture 案例)→ 非 IT
+def test_cpc_engineering_code_is_not_it():
+    category = classify(_tender(title="昆陽大樓整建工程", category_code="5159"))
+    assert category.domain_tag != "IT"
+    assert category.domain_tag == "醫療"  # 51 前綴 → 醫療器材/藥品
     assert category.method == "official_code"

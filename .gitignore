@@ -25,3 +25,4 @@ dist/
 *.sqlite
 *.sqlite3
 *.log
+*.db.bak-*

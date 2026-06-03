@@ -91,11 +91,12 @@ class TenderQueryService:
         date_to: Optional[date] = None,
         limit: int = 50,
     ) -> list[TenderSummaryView]:
-        # state 對應生命週期(TENDERING/AMENDED/AWARDED/FAILED);非法值即時拒絕,
-        # 避免悄悄回空集合讓 client 誤判「查無此狀態標案」。
         if state is not None and state not in TenderState.__members__:
             valid = "/".join(TenderState.__members__)
             raise ValueError(f"invalid state {state!r}; must be one of {valid}")
+        limit = min(limit, 200)
+        if domain_tag is None:
+            domain_tag = "IT"
         tenders = await self._tenders.search(
             keyword=keyword,
             domain_tag=domain_tag,
