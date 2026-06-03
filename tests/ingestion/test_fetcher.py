@@ -1,7 +1,7 @@
 """驗收 spec/features/tender-ingestion.feature 的 4 個場景。"""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -46,6 +46,25 @@ class TestScenarioParseValueAddedFields:
         assert detail.procurement.attr == "財物類"
         assert detail.procurement.type == "公開招標"
         assert detail.procurement.way == "最有利標"
+
+    async def test_parse_live_td_td_detail_extracts_category(
+        self, fake_http: FakeHttp
+    ) -> None:
+        """真實 web.pcc 明細頁是 td/td 結構(非 th/td);雙模式解析須生效。"""
+        fake_http.default(
+            Resp(status_code=200, text=load_fixture("live_tender_detail.html"))
+        )
+        fetcher = PccHttpFetcher(fake_http)
+
+        detail = await fetcher.fetch_detail("113TFDA-A-513", "3.79.21")
+
+        # 標的分類「工程類 5159 - 其他專業工程」→ attr=工程類, code=5159
+        assert detail.category_code == "5159"
+        assert detail.procurement.attr == "工程類"
+        assert detail.title == "昆陽大樓整建工程採購案"
+        assert detail.agency == "衛生福利部食品藥物管理署"
+        assert detail.open_date == datetime(2025, 5, 8, 10, 0)
+        assert detail.budget == 1_437_749_369
 
     async def test_parse_award_detail_extracts_price_and_vendors(
         self, fake_http: FakeHttp
@@ -210,3 +229,39 @@ class TestScenarioIncrementalSkip:
 
         log.record(target, FetchStatus.SUCCESS)
         assert log.should_fetch(target) is False
+
+
+# ----------------------------------------------------------------------
+# 場景 5: BLOCKED 退避期(retry_after)— 持久層語義收斂
+# ----------------------------------------------------------------------
+class TestScenarioBlockedRetryAfter:
+    def test_blocked_within_retry_after_is_not_fetched(self) -> None:
+        log = FetchLog()
+        target = detail_target("1130108-5", "3.80.11")
+        now = datetime(2026, 6, 2, 12, 0, tzinfo=timezone.utc)
+        future = now + timedelta(hours=4)
+
+        log.record_blocked(target, retry_after=future, http_status=403)
+
+        # retry_after 未到 → 不抓
+        assert log.should_fetch(target, now=now) is False
+
+    def test_blocked_after_retry_after_elapsed_is_fetched(self) -> None:
+        log = FetchLog()
+        target = detail_target("1130108-5", "3.80.11")
+        now = datetime(2026, 6, 2, 12, 0, tzinfo=timezone.utc)
+        past = now - timedelta(hours=1)
+
+        log.record_blocked(target, retry_after=past, http_status=429)
+
+        # retry_after 已過 → 可重抓
+        assert log.should_fetch(target, now=now) is True
+
+    def test_record_blocked_sets_blocked_status(self) -> None:
+        log = FetchLog()
+        target = detail_target("1130108-5", "3.80.11")
+        log.record_blocked(
+            target,
+            retry_after=datetime.now(timezone.utc) + timedelta(hours=4),
+        )
+        assert log.status_of(target) is FetchStatus.BLOCKED

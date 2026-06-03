@@ -22,15 +22,37 @@ async def test_search_tenders_filters_by_domain_and_budget(
     assert hit.case_no == "3.79:1130108-5"
 
 
+# 場景: search_tenders 未指定 domain_tag 時預設只回 IT(本 MCP 資料範圍護欄)
+async def test_search_tenders_defaults_to_it_domain(
+    service: TenderQueryService,
+) -> None:
+    # 不傳 domain_tag → 預設帶入 IT,工程案(construction)應被排除
+    results = await service.search_tenders()
+
+    assert len(results) == 2  # it_big + it_small,工程案被預設護欄濾掉
+    assert all(r.domain_tag == "IT" for r in results)
+
+
+# 場景: 明確傳其他 domain_tag 時仍尊重(以利除錯)
+async def test_search_tenders_explicit_domain_tag_overrides_default(
+    service: TenderQueryService,
+) -> None:
+    results = await service.search_tenders(domain_tag="工程")
+
+    assert len(results) == 1
+    assert results[0].domain_tag == "工程"
+
+
 # 場景: search_tenders 以生命週期狀態過濾(找尚未決標的標案)
 async def test_search_tenders_filters_by_state(
     service: TenderQueryService,
 ) -> None:
+    # 預設 IT 護欄 + state=TENDERING → 僅 it_small(工程案非 IT 被濾掉)
     results = await service.search_tenders(state="TENDERING")
 
-    # fixture: 1 筆 AWARDED(it_big) + 2 筆 TENDERING(it_small, construction)
-    assert len(results) == 2
+    assert len(results) == 1
     assert all(r.state == "TENDERING" for r in results)
+    assert all(r.domain_tag == "IT" for r in results)
 
 
 # 場景: search_tenders 傳入非法狀態值應拒絕

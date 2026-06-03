@@ -77,23 +77,35 @@ class SqliteTenderRepository:
                 category_code, category_name, domain_tag, category_method
             ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(tender_id) DO UPDATE SET
+                -- volatile 欄位:每次都覆寫(baseline 與 enrich 皆權威)
                 agency=excluded.agency,
                 title=excluded.title,
                 lifecycle_state=excluded.lifecycle_state,
-                budget=excluded.budget,
-                budget_currency=excluded.budget_currency,
-                open_date=excluded.open_date,
-                bid_deadline=excluded.bid_deadline,
-                base_price=excluded.base_price,
-                base_price_currency=excluded.base_price_currency,
-                bidder_count=excluded.bidder_count,
                 procurement_attr=excluded.procurement_attr,
                 procurement_type=excluded.procurement_type,
                 award_way=excluded.award_way,
-                category_code=excluded.category_code,
-                category_name=excluded.category_name,
-                domain_tag=excluded.domain_tag,
-                category_method=excluded.category_method
+                -- 加值欄位:新值為 NULL 時保留舊值(避免 baseline 洗掉 enrich)
+                budget=COALESCE(excluded.budget, tenders.budget),
+                budget_currency=COALESCE(excluded.budget_currency, tenders.budget_currency),
+                open_date=COALESCE(excluded.open_date, tenders.open_date),
+                bid_deadline=COALESCE(excluded.bid_deadline, tenders.bid_deadline),
+                base_price=COALESCE(excluded.base_price, tenders.base_price),
+                base_price_currency=COALESCE(excluded.base_price_currency, tenders.base_price_currency),
+                bidder_count=COALESCE(excluded.bidder_count, tenders.bidder_count),
+                -- 分類欄位:空字串(llm_fallback baseline)亦視為「不覆寫」,
+                -- 避免 official_code 退化;三欄一起跟隨 category_code 的判定
+                category_code=CASE
+                    WHEN excluded.category_code IS NULL OR excluded.category_code=''
+                    THEN tenders.category_code ELSE excluded.category_code END,
+                category_name=CASE
+                    WHEN excluded.category_code IS NULL OR excluded.category_code=''
+                    THEN tenders.category_name ELSE excluded.category_name END,
+                domain_tag=CASE
+                    WHEN excluded.category_code IS NULL OR excluded.category_code=''
+                    THEN tenders.domain_tag ELSE excluded.domain_tag END,
+                category_method=CASE
+                    WHEN excluded.category_code IS NULL OR excluded.category_code=''
+                    THEN tenders.category_method ELSE excluded.category_method END
             """,
             (
                 tid,
@@ -143,6 +155,31 @@ class SqliteTenderRepository:
             )
 
         await self._project_vendor_awards(tender)
+        await self._conn.commit()
+
+    async def rekey(self, old_tender_id: str, new_tender_id: str) -> None:
+        """org_id 補上後主鍵由 ':CASE' 變 'org:CASE':搬移三表舊鍵列至新鍵。
+
+        Why: 第一階段 baseline 可能無 org_id(鍵為 ':1130108-5'),enrich 反查
+        補上後鍵變 '3.80.11:1130108-5'。先更新父表 tenders,再更新引用它的子表
+        (announcements / vendor_awards 外鍵 ref tenders.tender_id)。
+        no-op 若舊鍵不存在或新舊相同。
+        """
+        if old_tender_id == new_tender_id:
+            return
+        org_id, job_number = new_tender_id.split(":", 1)
+        await self._conn.execute(
+            "UPDATE tenders SET tender_id=?, org_id=?, job_number=? WHERE tender_id=?",
+            (new_tender_id, org_id, job_number, old_tender_id),
+        )
+        await self._conn.execute(
+            "UPDATE announcements SET tender_id=? WHERE tender_id=?",
+            (new_tender_id, old_tender_id),
+        )
+        await self._conn.execute(
+            "UPDATE vendor_awards SET tender_id=? WHERE tender_id=?",
+            (new_tender_id, old_tender_id),
+        )
         await self._conn.commit()
 
     async def search(

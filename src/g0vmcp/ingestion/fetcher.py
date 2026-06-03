@@ -26,6 +26,15 @@ from g0vmcp.ingestion.http import HttpGetter
 _BASE = "https://web.pcc.gov.tw"
 _DETAIL_PATH = "/tps/tender/common/bulletion/readBulletion"
 _SEARCH_PATH = "/prkms/tender/common/basic/readTenderBasic"
+# readTenderBasic POST 搜尋表單(已實測可定位 tpam 明細頁)
+_SEARCH_FORM = {
+    "pageSize": "50",
+    "firstSearch": "true",
+    "searchType": "basic",
+    "isBinding": "N",
+    "isLogIn": "N",
+    "dateType": "isDate",
+}
 
 _BLOCKED_STATUS = {403, 429}
 _MONEY_RE = re.compile(r"[\d,]+")
@@ -104,6 +113,10 @@ class PccHttpFetcher:
     async def fetch_detail(
         self, job_number: str, org_id: Optional[str]
     ) -> ParsedDetail:
+        # 真實 web.pcc 明細頁需 POST 搜尋 → tpam 連結 → GET(getter 具 post 能力時走此路);
+        # 無 post 的注入替身(合成測試)退回 readBulletion 直連。
+        if hasattr(self._http, "post"):
+            return await self._fetch_via_search(job_number, org_id)
         url = f"{_BASE}{_DETAIL_PATH}?caseNo={job_number}&orgId={org_id or ''}"
         resp = await self._http(url)
         if resp.status_code in _BLOCKED_STATUS:
@@ -115,6 +128,33 @@ class PccHttpFetcher:
                 f"unexpected status {resp.status_code} for {job_number}"
             )
         return self._parse_detail(resp.text, job_number, org_id, source_url=url)
+
+    async def _fetch_via_search(
+        self, job_number: str, org_id: Optional[str]
+    ) -> ParsedDetail:
+        """readTenderBasic POST 搜尋 → 解析 tpam 明細頁連結 → GET → 解析(雙模式)。
+
+        tpam 明細頁才含標的分類 CPC 碼;org_id 順帶從搜尋結果反查(拿不到則維持空鍵)。
+        """
+        resp = await self._http.post(
+            f"{_BASE}{_SEARCH_PATH}", {"tenderId": job_number, **_SEARCH_FORM}
+        )
+        href: Optional[str] = None
+        for row in HTMLParser(resp.text).css("tr"):
+            if job_number not in row.text():
+                continue
+            link = row.css_first("a[href*=tpam]")
+            if link is not None:
+                href = link.attributes.get("href")
+                break
+        if not href:
+            raise RuntimeError(f"no tpam detail link for {job_number}")
+        detail_url = f"{_BASE}{href}"
+        detail_resp = await self._http(detail_url)
+        resolved = org_id or self._extract_org_id(resp.text, job_number)
+        return self._parse_detail(
+            detail_resp.text, job_number, resolved, source_url=detail_url
+        )
 
     # ------------------------------------------------------------------
     # 解析
@@ -164,16 +204,29 @@ class PccHttpFetcher:
 
     @staticmethod
     def _extract_fields(tree: HTMLParser) -> dict[str, str]:
-        """掃描 th/td 對 → {label: value};label 去除冒號等雜訊。"""
+        """雙模式掃描 → {label: value};首見為準(first-seen wins)。
+
+        合成頁用 <th>label</th><td>value</td>;真實 web.pcc 明細頁則整列皆 <td>,
+        label 與 value 為相鄰兩個 td。逐列先試 th/td,該列無 th 才退回 td/td,
+        兩種結構同頁可並存。
+        """
         fields: dict[str, str] = {}
         for row in tree.css("tr"):
             th = row.css_first("th")
-            td = row.css_first("td")
-            if th is None or td is None:
+            if th is not None:
+                td = row.css_first("td")
+                if td is None:
+                    continue
+                label = _clean(th.text()).rstrip(":：")
+                if label and label not in fields:
+                    fields[label] = _clean(td.text())
                 continue
-            label = _clean(th.text()).rstrip(":：")
-            if label and label not in fields:
-                fields[label] = _clean(td.text())
+            # 無 th → td/td 模型:相鄰兩 td 視為 label/value(併入明細頁實戰邏輯)
+            cells = row.css("td")
+            for i in range(len(cells) - 1):
+                label = _clean(cells[i].text()).rstrip(":：")
+                if label and label not in fields:
+                    fields[label] = _clean(cells[i + 1].text())
         return fields
 
     @staticmethod

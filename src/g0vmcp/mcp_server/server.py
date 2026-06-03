@@ -36,6 +36,9 @@ def build_mcp(service: TenderQueryService) -> FastMCP:
     ) -> list[TenderSummaryView]:
         """以關鍵字、分類、機關、生命週期狀態、日期、金額區間查詢標案。
 
+        本 MCP 資料範圍 = 衛生福利部及轄下機關的「資訊服務類」標案。
+        domain_tag 預設 IT:未指定時只回資訊服務類;傳其他值(除錯用)仍尊重。
+
         state: 生命週期狀態,擇一 TENDERING(招標中/尚未決標)/AMENDED(更正)/
             AWARDED(已決標)/FAILED(無法決標)/STALE(超過180天無決標)。
             查「尚未決標」傳 state="TENDERING"。

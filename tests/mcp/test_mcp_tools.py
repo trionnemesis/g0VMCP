@@ -36,10 +36,20 @@ async def test_search_tenders_tool(mcp) -> None:
 
 # 場景: search_tenders 以狀態過濾找尚未決標(經 MCP tool)
 async def test_search_tenders_by_state_tool(mcp) -> None:
+    # 預設 IT 護欄 + state=TENDERING → 僅 it_small(工程案非 IT 被濾掉)
     async with Client(mcp) as client:
         res = await client.call_tool("search_tenders", {"state": "TENDERING"})
-    assert len(res.data) == 2
+    assert len(res.data) == 1
     assert all(r.state == "TENDERING" for r in res.data)
+    assert all(r.domain_tag == "IT" for r in res.data)
+
+
+# 場景: 不傳 domain_tag 時預設只回 IT(資料範圍護欄,經 MCP tool)
+async def test_search_tenders_defaults_to_it_tool(mcp) -> None:
+    async with Client(mcp) as client:
+        res = await client.call_tool("search_tenders", {})
+    assert len(res.data) == 2
+    assert all(r.domain_tag == "IT" for r in res.data)
 
 
 # 場景: get_tender_detail 回傳加值欄位(經 MCP tool)
