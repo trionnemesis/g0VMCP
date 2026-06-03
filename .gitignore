@@ -26,3 +26,6 @@ dist/
 *.sqlite3
 *.log
 *.db.bak-*
+
+# Claude Code local settings (keep skills/ tracked)
+.claude/settings.local.json
