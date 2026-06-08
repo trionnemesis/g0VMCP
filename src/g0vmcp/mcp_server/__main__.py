@@ -32,7 +32,7 @@ def main() -> None:
 
     transport = os.environ.get("G0VMCP_TRANSPORT", "stdio")
     if transport == "sse":
-        host = os.environ.get("G0VMCP_HOST", "0.0.0.0")
+        host = os.environ.get("G0VMCP_HOST", "127.0.0.1")
         port = int(os.environ.get("G0VMCP_PORT", "8000"))
         mcp.run(transport="sse", host=host, port=port)
     else:
