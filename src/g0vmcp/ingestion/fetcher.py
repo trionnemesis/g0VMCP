@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 from datetime import date, datetime
 from typing import Optional, Sequence
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 from selectolax.parser import HTMLParser, Node
 
@@ -82,7 +82,7 @@ class PccHttpFetcher:
     # ------------------------------------------------------------------
     async def resolve_org_id(self, job_number: str, agency: str) -> Optional[str]:
         """以 job_number + 機關名稱反查 org_id;查不到回 None(呼叫端跳過)。"""
-        url = f"{_BASE}{_SEARCH_PATH}?caseNo={job_number}"
+        url = f"{_BASE}{_SEARCH_PATH}?caseNo={quote(job_number, safe='')}"
         try:
             resp = await self._http(url)
         except BlockedError:
@@ -117,7 +117,7 @@ class PccHttpFetcher:
         # 無 post 的注入替身(合成測試)退回 readBulletion 直連。
         if hasattr(self._http, "post"):
             return await self._fetch_via_search(job_number, org_id)
-        url = f"{_BASE}{_DETAIL_PATH}?caseNo={job_number}&orgId={org_id or ''}"
+        url = f"{_BASE}{_DETAIL_PATH}?caseNo={quote(job_number, safe='')}&orgId={quote(org_id or '', safe='')}"
         resp = await self._http(url)
         if resp.status_code in _BLOCKED_STATUS:
             raise BlockedError(

@@ -190,7 +190,7 @@ g0vmcp-purge --apply                    # 實際執行刪除
 |------|------|--------|
 | `G0VMCP_DB` | SQLite DB 路徑 | `~/.g0vmcp/g0vmcp.db` |
 | `G0VMCP_TRANSPORT` | MCP transport（`stdio` / `sse`） | `stdio` |
-| `G0VMCP_HOST` | SSE bind host | `0.0.0.0` |
+| `G0VMCP_HOST` | SSE bind host | `127.0.0.1` |
 | `G0VMCP_PORT` | SSE port | `8000` |
 
 SSE 模式適用於多 Agent 共用或容器部署：
