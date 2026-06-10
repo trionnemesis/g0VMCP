@@ -182,6 +182,11 @@ class SqliteTenderRepository:
         )
         await self._conn.commit()
 
+    @staticmethod
+    def _escape_like(value: str) -> str:
+        """Escape SQL LIKE wildcards to prevent unintended pattern matching (CWE-943)."""
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
     async def search(
         self,
         *,
@@ -199,14 +204,18 @@ class SqliteTenderRepository:
         params: list[Any] = []
 
         if keyword:
-            clauses.append("(t.title LIKE ? OR t.agency LIKE ?)")
-            params.extend([f"%{keyword}%", f"%{keyword}%"])
+            escaped = self._escape_like(keyword)
+            clauses.append(
+                "(t.title LIKE ? ESCAPE '\\' OR t.agency LIKE ? ESCAPE '\\')"
+            )
+            params.extend([f"%{escaped}%", f"%{escaped}%"])
         if domain_tag:
             clauses.append("t.domain_tag = ?")
             params.append(domain_tag)
         if agency:
-            clauses.append("t.agency LIKE ?")
-            params.append(f"%{agency}%")
+            escaped_agency = self._escape_like(agency)
+            clauses.append("t.agency LIKE ? ESCAPE '\\'")
+            params.append(f"%{escaped_agency}%")
         if state:
             clauses.append("t.lifecycle_state = ?")
             params.append(state)

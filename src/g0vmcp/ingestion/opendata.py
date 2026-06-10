@@ -9,7 +9,20 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+import defusedxml
 import defusedxml.ElementTree as ET
+
+_MAX_XML_LEN = 100 * 1024 * 1024  # 100 MiB hard cap
+
+
+def _safe_fromstring(xml: str) -> ET.Element:
+    """Size-guard + defusedxml; raises ValueError on oversized or forbidden XML (CWE-611/776)."""
+    if len(xml) > _MAX_XML_LEN:
+        raise ValueError(f"XML too large: {len(xml)} bytes (limit {_MAX_XML_LEN})")
+    try:
+        return ET.fromstring(xml)
+    except defusedxml.DefusedXmlException as exc:
+        raise ValueError("XML rejected: DTD or external entities not allowed") from exc
 
 _DOWNLOAD_BASE = "https://web.pcc.gov.tw/tps/tp/OpenData/downloadFile"
 
@@ -52,7 +65,7 @@ def _text(node: ET.Element, tag: str) -> str:
 
 def parse_tender_xml(xml: str) -> list[OpenDataRow]:
     """解析半月招標 XML 為 OpenDataRow 串列。缺欄位以空字串填充。"""
-    root = ET.fromstring(xml)
+    root = _safe_fromstring(xml)
     rows: list[OpenDataRow] = []
     for t in root.iter("TENDER"):
         rows.append(
@@ -70,7 +83,7 @@ def parse_tender_xml(xml: str) -> list[OpenDataRow]:
 
 def parse_award_xml(xml: str) -> list[AwardRow]:
     """解析半月決標 XML。得標廠商在巢狀 <BIDDER_LIST>/<BIDDER_SUPP_NAME>(可多筆/空)。"""
-    root = ET.fromstring(xml)
+    root = _safe_fromstring(xml)
     rows: list[AwardRow] = []
     for t in root.iter("TENDER"):
         bl = t.find("BIDDER_LIST")

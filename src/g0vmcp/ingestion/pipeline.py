@@ -13,9 +13,12 @@ DI 注入 fetcher(PccDetailFetcher)/repo(TenderRepository)/fetch_log;測試以 f
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from g0vmcp.contracts import (
     Announcement,
@@ -209,6 +212,7 @@ class IngestionPipeline:
                 stats.blocked += 1
                 break  # 中止本批,避免持續觸發封鎖;下次 retry_after 後續抓
             except Exception:  # noqa: BLE001 — 單筆失敗不中斷整批
+                logger.warning("enrich failed for %s", case_no, exc_info=True)
                 self._fetch_log.record(case_no, FetchStatus.FAILED)
                 stats.failed += 1
                 continue

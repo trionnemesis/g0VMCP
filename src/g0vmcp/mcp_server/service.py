@@ -83,6 +83,14 @@ class TenderQueryService:
         self._tenders = tender_repo
         self._vendors = vendor_repo
 
+    _MAX_INPUT_LEN = 200
+
+    @staticmethod
+    def _validate_str(value: Optional[str], name: str, max_len: int = 200) -> Optional[str]:
+        if value is not None and len(value) > max_len:
+            raise ValueError(f"{name} too long ({len(value)} chars, max {max_len})")
+        return value
+
     async def search_tenders(
         self,
         *,
@@ -96,6 +104,9 @@ class TenderQueryService:
         date_to: Optional[date] = None,
         limit: int = 50,
     ) -> list[TenderSummaryView]:
+        self._validate_str(keyword, "keyword")
+        self._validate_str(domain_tag, "domain_tag", 50)
+        self._validate_str(agency, "agency")
         if state is not None and state not in TenderState.__members__:
             valid = "/".join(TenderState.__members__)
             raise ValueError(f"invalid state {state!r}; must be one of {valid}")
@@ -131,6 +142,7 @@ class TenderQueryService:
 
     async def get_tender_detail(self, case_no: str) -> Optional[TenderDetailView]:
         """查無 → None(不拋例外)。"""
+        self._validate_str(case_no, "case_no")
         tender = await self._tenders.get(case_no)
         if tender is None:
             return None
@@ -172,6 +184,7 @@ class TenderQueryService:
 
     async def get_vendor_awards(self, tax_id: str) -> list[VendorAwardView]:
         """廠商得標記錄。查無 → 空 list。"""
+        self._validate_str(tax_id, "tax_id", 20)
         awards = await self._vendors.awards_of(tax_id)
         return [
             VendorAwardView(
