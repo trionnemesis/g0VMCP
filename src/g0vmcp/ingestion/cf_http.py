@@ -81,8 +81,11 @@ class CloudflareAwareHttpGetter:
         m = _GATE_RE.search(html)
         if not m:
             return False  # 找不到驗證 URL → 非速率封鎖,結構異常,不重試
+        path = _htmllib.unescape(m.group(1))
+        if not path.startswith("/tps/"):
+            return False
         self._sleep(_GATE_WAIT_SECONDS)  # 尊重速率限制的計時等候
-        self._raw_get(_BASE + _htmllib.unescape(m.group(1)))
+        self._raw_get(_BASE + path)
         return True
 
     def _get_through_gate(self, url: str) -> str:

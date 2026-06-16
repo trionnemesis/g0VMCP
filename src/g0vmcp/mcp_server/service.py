@@ -110,7 +110,7 @@ class TenderQueryService:
         if state is not None and state not in TenderState.__members__:
             valid = "/".join(TenderState.__members__)
             raise ValueError(f"invalid state {state!r}; must be one of {valid}")
-        limit = min(limit, 200)
+        limit = max(1, min(limit, 200))
         if domain_tag is None:
             domain_tag = "IT"
         tenders = await self._tenders.search(
@@ -165,6 +165,7 @@ class TenderQueryService:
 
     async def get_tender_lifecycle(self, case_no: str) -> list[LifecycleEntryView]:
         """依公告日期排序的事件時間線。查無 → 空 list。"""
+        self._validate_str(case_no, "case_no")
         tender = await self._tenders.get(case_no)
         if tender is None:
             return []

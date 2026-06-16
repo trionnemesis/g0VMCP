@@ -22,7 +22,7 @@ def _resolve_db(override: Optional[str] = None) -> str:
     if env:
         return env
     data_dir = Path.home() / ".g0vmcp"
-    data_dir.mkdir(parents=True, exist_ok=True)
+    data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     return str(data_dir / "g0vmcp.db")
 
 

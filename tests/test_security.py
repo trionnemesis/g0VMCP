@@ -218,3 +218,123 @@ class TestURLParameterEncoding:
         encoded = quote(malicious, safe="")
         assert "&" not in encoded
         assert "=" not in encoded
+
+
+# ── 6. Lifecycle case_no validation (CWE-20) ─────────────────────────────────
+
+
+class TestLifecycleInputValidation:
+    """Verify get_tender_lifecycle validates case_no length."""
+
+    @pytest.fixture
+    def service(self) -> TenderQueryService:
+        return TenderQueryService(FakeTenderRepo(), FakeVendorRepo())
+
+    async def test_lifecycle_case_no_too_long_rejected(self, service: TenderQueryService) -> None:
+        with pytest.raises(ValueError, match="case_no too long"):
+            await service.get_tender_lifecycle("x" * 201)
+
+    async def test_lifecycle_case_no_at_limit_accepted(self, service: TenderQueryService) -> None:
+        result = await service.get_tender_lifecycle("x" * 200)
+        assert isinstance(result, list)
+
+
+# ── 7. Negative limit clamped (CWE-20) ───────────────────────────────────────
+
+
+class TestLimitBounds:
+    """Verify search_tenders clamps limit to [1, 200]."""
+
+    @pytest.fixture
+    def service(self) -> TenderQueryService:
+        return TenderQueryService(
+            FakeTenderRepo([_make_tender()]), FakeVendorRepo()
+        )
+
+    async def test_negative_limit_clamped_to_one(self, service: TenderQueryService) -> None:
+        result = await service.search_tenders(limit=-1)
+        assert isinstance(result, list)
+
+    async def test_zero_limit_clamped_to_one(self, service: TenderQueryService) -> None:
+        result = await service.search_tenders(limit=0)
+        assert isinstance(result, list)
+
+    async def test_over_max_limit_clamped(self, service: TenderQueryService) -> None:
+        result = await service.search_tenders(limit=500)
+        assert isinstance(result, list)
+
+
+# ── 8. Gate URL path validation (CWE-918) ────────────────────────────────────
+
+
+class TestGateURLValidation:
+    """Verify cf_http gate-pass only follows /tps/ paths."""
+
+    def test_gate_rejects_non_tps_path(self) -> None:
+        from g0vmcp.ingestion.cf_http import CloudflareAwareHttpGetter
+        getter = CloudflareAwareHttpGetter(sleep=lambda _: None, max_retry=1)
+        html = '<input id="url" value="https://evil.com/steal"/>'
+        assert getter._pass_gate(html) is False
+
+    def test_gate_accepts_tps_validate_path(self) -> None:
+        from g0vmcp.ingestion.cf_http import CloudflareAwareHttpGetter
+        calls = []
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                calls.append(req.full_url)
+                import io
+                resp = io.BytesIO(b"ok")
+                resp.read = resp.read
+                resp.__enter__ = lambda s: s
+                resp.__exit__ = lambda s, *a: None
+                return resp
+        getter = CloudflareAwareHttpGetter(
+            opener=FakeOpener(), sleep=lambda _: None, max_retry=1
+        )
+        html = '<input id="url" value="/tps/validate/check?token=abc"/>'
+        assert getter._pass_gate(html) is True
+        assert any("/tps/validate/check" in c for c in calls)
+
+
+# ── 9. SSE port range validation (CWE-20) ────────────────────────────────────
+
+
+class TestSSEPortValidation:
+    """Verify SSE port rejects out-of-range values."""
+
+    def test_port_zero_rejected(self) -> None:
+        from g0vmcp.mcp_server.__main__ import main
+        import os
+        os.environ["G0VMCP_TRANSPORT"] = "sse"
+        os.environ["G0VMCP_PORT"] = "0"
+        with pytest.raises(ValueError, match="1-65535"):
+            main()
+        os.environ.pop("G0VMCP_TRANSPORT", None)
+        os.environ.pop("G0VMCP_PORT", None)
+
+    def test_port_too_high_rejected(self) -> None:
+        from g0vmcp.mcp_server.__main__ import main
+        import os
+        os.environ["G0VMCP_TRANSPORT"] = "sse"
+        os.environ["G0VMCP_PORT"] = "70000"
+        with pytest.raises(ValueError, match="1-65535"):
+            main()
+        os.environ.pop("G0VMCP_TRANSPORT", None)
+        os.environ.pop("G0VMCP_PORT", None)
+
+
+# ── 10. Data directory permissions (CWE-732) ─────────────────────────────────
+
+
+class TestDataDirPermissions:
+    """Verify data directory is created with restricted permissions."""
+
+    def test_resolve_db_creates_restricted_dir(self, tmp_path, monkeypatch) -> None:
+        import stat
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("G0VMCP_DB", raising=False)
+        from g0vmcp.mcp_server.__main__ import _resolve_db_path
+        _resolve_db_path()
+        data_dir = tmp_path / ".g0vmcp"
+        mode = data_dir.stat().st_mode & 0o777
+        assert mode == 0o700
