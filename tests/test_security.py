@@ -218,3 +218,171 @@ class TestURLParameterEncoding:
         encoded = quote(malicious, safe="")
         assert "&" not in encoded
         assert "=" not in encoded
+
+
+# ── 6. Lifecycle Input Validation (CWE-20) ──────────────────────────────────
+
+
+class TestLifecycleInputValidation:
+    """Verify get_tender_lifecycle validates case_no length."""
+
+    @pytest.fixture
+    def service(self) -> TenderQueryService:
+        return TenderQueryService(FakeTenderRepo(), FakeVendorRepo())
+
+    async def test_lifecycle_case_no_too_long_rejected(self, service: TenderQueryService) -> None:
+        with pytest.raises(ValueError, match="case_no too long"):
+            await service.get_tender_lifecycle("x" * 201)
+
+    async def test_lifecycle_normal_case_no_accepted(self, service: TenderQueryService) -> None:
+        result = await service.get_tender_lifecycle("CDC-115-001")
+        assert isinstance(result, list)
+
+
+# ── 7. Negative Limit Clamping (CWE-20) ─────────────────────────────────────
+
+
+class TestLimitClamping:
+    """Verify that negative or zero limit values are clamped to 1."""
+
+    @pytest.fixture
+    def service(self) -> TenderQueryService:
+        return TenderQueryService(
+            FakeTenderRepo([_make_tender("T001"), _make_tender("T002")]),
+            FakeVendorRepo(),
+        )
+
+    async def test_negative_limit_returns_results(self, service: TenderQueryService) -> None:
+        results = await service.search_tenders(limit=-1)
+        assert len(results) >= 1
+
+    async def test_zero_limit_returns_results(self, service: TenderQueryService) -> None:
+        results = await service.search_tenders(limit=0)
+        assert len(results) >= 1
+
+
+# ── 8. ROC Datetime Invalid Values (CWE-20) ─────────────────────────────────
+
+
+class TestRocDatetimeInvalidValues:
+    """Verify that invalid ROC date values return None instead of crashing."""
+
+    def test_invalid_month_returns_none(self) -> None:
+        from g0vmcp.ingestion.fetcher import _parse_roc_datetime
+        assert _parse_roc_datetime("114/13/01") is None
+
+    def test_invalid_day_returns_none(self) -> None:
+        from g0vmcp.ingestion.fetcher import _parse_roc_datetime
+        assert _parse_roc_datetime("114/02/30") is None
+
+    def test_valid_date_still_works(self) -> None:
+        from g0vmcp.ingestion.fetcher import _parse_roc_datetime
+        dt = _parse_roc_datetime("114/01/20 14:30")
+        assert dt is not None
+        assert dt.year == 2025
+        assert dt.month == 1
+        assert dt.day == 20
+
+
+# ── 9. Gate URL Path Validation (CWE-918 SSRF) ─────────────────────────────
+
+
+class TestGateUrlPathValidation:
+    """Verify that Cloudflare gate URL paths are validated."""
+
+    def test_double_slash_path_rejected(self) -> None:
+        from g0vmcp.ingestion.cf_http import CloudflareAwareHttpGetter
+
+        calls: list[str] = []
+
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                calls.append(req.full_url if hasattr(req, "full_url") else str(req))
+                raise RuntimeError("should not reach")
+
+        getter = CloudflareAwareHttpGetter(
+            opener=FakeOpener(),
+            sleep=lambda _: None,
+        )
+        html = '<input id="url" value="//evil.com/tps/validate/check"/>'
+        result = getter._pass_gate(html)
+        assert result is False
+        assert len(calls) == 0
+
+    def test_at_sign_path_rejected(self) -> None:
+        from g0vmcp.ingestion.cf_http import CloudflareAwareHttpGetter
+
+        calls: list[str] = []
+
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                calls.append("called")
+                raise RuntimeError("should not reach")
+
+        getter = CloudflareAwareHttpGetter(
+            opener=FakeOpener(),
+            sleep=lambda _: None,
+        )
+        html = '<input id="url" value="/tps/validate/check@evil.com"/>'
+        result = getter._pass_gate(html)
+        assert result is False
+        assert len(calls) == 0
+
+    def test_valid_gate_path_accepted(self) -> None:
+        from g0vmcp.ingestion.cf_http import CloudflareAwareHttpGetter
+        import urllib.request
+        import http.cookiejar
+
+        calls: list[str] = []
+
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                url = req.full_url if hasattr(req, "full_url") else str(req)
+                calls.append(url)
+
+                class FakeResp:
+                    def read(self):
+                        return b"ok"
+                    def __enter__(self):
+                        return self
+                    def __exit__(self, *a):
+                        pass
+
+                return FakeResp()
+
+        getter = CloudflareAwareHttpGetter(
+            opener=FakeOpener(),
+            sleep=lambda _: None,
+        )
+        html = '<input id="url" value="/tps/validate/check?token=abc"/>'
+        result = getter._pass_gate(html)
+        assert result is True
+        assert any("/tps/validate/check" in c for c in calls)
+
+
+# ── 10. Fetch Via Search HREF Validation (CWE-918) ─────────────────────────
+
+
+class TestFetchViaSearchHrefValidation:
+    """Verify that tpam href from search results is validated."""
+
+    async def test_suspicious_href_rejected(self) -> None:
+        from g0vmcp.ingestion.fetcher import PccHttpFetcher
+        from g0vmcp.ingestion.http import Resp
+
+        class FakeHttp:
+            async def __call__(self, url: str) -> Resp:
+                return Resp(status_code=200, text="", url=url)
+
+            async def post(self, url: str, data: dict) -> Resp:
+                html = (
+                    '<table><tr>'
+                    '<td>TEST-001</td>'
+                    '<td><a href="//evil.com/tpam/page">link</a></td>'
+                    '</tr></table>'
+                )
+                return Resp(status_code=200, text=html, url=url)
+
+        fetcher = PccHttpFetcher(FakeHttp())
+        with pytest.raises(RuntimeError, match="suspicious tpam href"):
+            await fetcher.fetch_detail("TEST-001", None)
