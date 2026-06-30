@@ -149,6 +149,8 @@ class PccHttpFetcher:
                 break
         if not href:
             raise RuntimeError(f"no tpam detail link for {job_number}")
+        if not href.startswith("/"):
+            raise RuntimeError(f"unexpected detail href for {job_number}: must be relative path")
         detail_url = f"{_BASE}{href}"
         detail_resp = await self._http(detail_url)
         resolved = org_id or self._extract_org_id(resp.text, job_number)

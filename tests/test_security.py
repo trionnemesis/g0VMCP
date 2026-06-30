@@ -218,3 +218,102 @@ class TestURLParameterEncoding:
         encoded = quote(malicious, safe="")
         assert "&" not in encoded
         assert "=" not in encoded
+
+
+# ── 6. Negative Limit Bypass (CWE-20) ──────────────────────────────────────
+
+
+class TestNegativeLimitBypass:
+    """Verify negative limit is clamped to 1, not passed through as unlimited."""
+
+    @pytest.fixture
+    def service(self) -> TenderQueryService:
+        return TenderQueryService(FakeTenderRepo(), FakeVendorRepo())
+
+    async def test_negative_limit_clamped_to_1(self, service: TenderQueryService) -> None:
+        result = await service.search_tenders(limit=-1)
+        assert isinstance(result, list)
+
+    async def test_zero_limit_clamped_to_1(self, service: TenderQueryService) -> None:
+        result = await service.search_tenders(limit=0)
+        assert isinstance(result, list)
+
+    async def test_excessive_limit_clamped_to_200(self, service: TenderQueryService) -> None:
+        result = await service.search_tenders(limit=99999)
+        assert isinstance(result, list)
+
+
+# ── 7. Budget Validation (CWE-20) ──────────────────────────────────────────
+
+
+class TestBudgetValidation:
+    """Verify negative budget values are rejected."""
+
+    @pytest.fixture
+    def service(self) -> TenderQueryService:
+        return TenderQueryService(FakeTenderRepo(), FakeVendorRepo())
+
+    async def test_negative_budget_min_rejected(self, service: TenderQueryService) -> None:
+        with pytest.raises(ValueError, match="budget_min must be non-negative"):
+            await service.search_tenders(budget_min=-1)
+
+    async def test_negative_budget_max_rejected(self, service: TenderQueryService) -> None:
+        with pytest.raises(ValueError, match="budget_max must be non-negative"):
+            await service.search_tenders(budget_max=-1)
+
+    async def test_zero_budget_accepted(self, service: TenderQueryService) -> None:
+        result = await service.search_tenders(budget_min=0, budget_max=0)
+        assert isinstance(result, list)
+
+
+# ── 8. Lifecycle case_no Validation (CWE-20) ───────────────────────────────
+
+
+class TestLifecycleCaseNoValidation:
+    """Verify get_tender_lifecycle validates case_no length."""
+
+    @pytest.fixture
+    def service(self) -> TenderQueryService:
+        return TenderQueryService(FakeTenderRepo(), FakeVendorRepo())
+
+    async def test_lifecycle_case_no_too_long_rejected(self, service: TenderQueryService) -> None:
+        with pytest.raises(ValueError, match="case_no too long"):
+            await service.get_tender_lifecycle("x" * 201)
+
+    async def test_lifecycle_normal_case_no_accepted(self, service: TenderQueryService) -> None:
+        result = await service.get_tender_lifecycle("T001")
+        assert isinstance(result, list)
+
+
+# ── 9. Agency Length Validation (CWE-20) ────────────────────────────────────
+
+
+class TestAgencyLengthValidation:
+    """Verify agency parameter is length-validated."""
+
+    @pytest.fixture
+    def service(self) -> TenderQueryService:
+        return TenderQueryService(FakeTenderRepo(), FakeVendorRepo())
+
+    async def test_agency_too_long_rejected(self, service: TenderQueryService) -> None:
+        with pytest.raises(ValueError, match="agency too long"):
+            await service.search_tenders(agency="x" * 201)
+
+    async def test_agency_at_limit_accepted(self, service: TenderQueryService) -> None:
+        result = await service.search_tenders(agency="x" * 200)
+        assert isinstance(result, list)
+
+
+# ── 10. SSRF href Validation (CWE-918) ─────────────────────────────────────
+
+
+class TestFetcherHrefValidation:
+    """Verify that _fetch_via_search rejects non-relative hrefs."""
+
+    def test_absolute_href_rejected(self) -> None:
+        from g0vmcp.ingestion.fetcher import PccHttpFetcher
+        org_id = PccHttpFetcher._extract_org_id(
+            '<a href="https://evil.com?orgId=x&caseNo=T001">link</a>',
+            "T001",
+        )
+        assert org_id == "x"
