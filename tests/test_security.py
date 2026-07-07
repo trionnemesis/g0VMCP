@@ -194,7 +194,60 @@ class TestLikeWildcardEscaping:
         await conn.close()
 
 
-# ── 4. SSE Bind Address (CWE-668) ────────────────────────────────────────────
+# ── 4. Limit Parameter Clamping (CWE-400) ──────────────────────────────────────
+
+
+class TestLimitClamping:
+    """Verify that limit is clamped to [1, 200] — negative values must not bypass."""
+
+    @pytest.fixture
+    def service(self) -> TenderQueryService:
+        return TenderQueryService(FakeTenderRepo(), FakeVendorRepo())
+
+    async def test_negative_limit_clamped_to_1(self, service: TenderQueryService) -> None:
+        result = await service.search_tenders(limit=-1)
+        assert isinstance(result, list)
+
+    async def test_zero_limit_clamped_to_1(self, service: TenderQueryService) -> None:
+        result = await service.search_tenders(limit=0)
+        assert isinstance(result, list)
+
+    async def test_negative_limit_does_not_return_unlimited(self) -> None:
+        import aiosqlite
+        from g0vmcp.repository.schema import init_db
+
+        conn = await aiosqlite.connect(":memory:")
+        await init_db(conn)
+        repo = SqliteTenderRepository(conn)
+        for i in range(10):
+            await repo.save(_make_tender(case_no=f"T{i:03d}", title=f"tender {i}"))
+
+        svc = TenderQueryService(repo, FakeVendorRepo())
+        result = await svc.search_tenders(limit=-1)
+        assert len(result) <= 200
+        await conn.close()
+
+
+# ── 5. Missing Input Validation (CWE-20) ───────────────────────────────────────
+
+
+class TestMissingInputValidation:
+    """Verify that previously unvalidated parameters are now checked."""
+
+    @pytest.fixture
+    def service(self) -> TenderQueryService:
+        return TenderQueryService(FakeTenderRepo(), FakeVendorRepo())
+
+    async def test_agency_too_long_rejected(self, service: TenderQueryService) -> None:
+        with pytest.raises(ValueError, match="agency too long"):
+            await service.search_tenders(agency="x" * 201)
+
+    async def test_lifecycle_case_no_too_long_rejected(self, service: TenderQueryService) -> None:
+        with pytest.raises(ValueError, match="case_no too long"):
+            await service.get_tender_lifecycle("x" * 201)
+
+
+# ── 6. SSE Bind Address (CWE-668) ────────────────────────────────────────────
 
 
 class TestSSEBindAddress:
@@ -206,7 +259,7 @@ class TestSSEBindAddress:
         assert os.environ.get("G0VMCP_HOST", "127.0.0.1") == "127.0.0.1"
 
 
-# ── 5. URL Parameter Encoding (CWE-20) ───────────────────────────────────────
+# ── 7. URL Parameter Encoding (CWE-20) ───────────────────────────────────────
 
 
 class TestURLParameterEncoding:
