@@ -1,10 +1,13 @@
 # g0VMCP
 
+g0VMCP is a Model Context Protocol (MCP) server that aggregates Taiwan's Public Construction Commission (PCC) e-procurement data for Ministry of Health and Welfare (MOHW) IT-service tenders. It fills in the value-added fields missing from the public `pcc-tender` open dataset — budget, bid/award dates, reserve price, bidder count — and tracks each tender's full lifecycle from announcement through award. Built with FastMCP, it exposes four query tools to Claude or any MCP-compatible agent.
+
 > 政府採購標案情報聚合 MCP — 衛福部資訊服務類標案查詢
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![FastMCP](https://img.shields.io/badge/built%20with-FastMCP-orange)](https://github.com/jlowin/fastmcp)
+[![CI](https://github.com/trionnemesis/g0VMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/trionnemesis/g0VMCP/actions/workflows/ci.yml)
 
 g0VMCP 以 [FastMCP](https://github.com/jlowin/fastmcp) 封裝政府電子採購網（PCC）資料，補完 `pcc-tender` 缺漏的加值欄位，並維護標案完整生命週期。  
 資料範圍鎖定 **衛生福利部（及轄下機關）× 資訊服務類**標案，透過 MCP 協定對 Claude（或任何相容 Agent）提供四項查詢工具。
@@ -22,6 +25,7 @@ g0VMCP 以 [FastMCP](https://github.com/jlowin/fastmcp) 封裝政府電子採購
 - [專案架構](#專案架構)
 - [開發](#開發)
 - [License](#license)
+- [Related projects](#related-projects)
 
 ---
 
@@ -60,15 +64,16 @@ g0VMCP 以 [FastMCP](https://github.com/jlowin/fastmcp) 封裝政府電子採購
 
 ### 1. 安裝
 
+> 尚未發佈至 PyPI，請直接從原始碼安裝。
+
 ```bash
-# uvx（零安裝，推薦）
-uvx g0vmcp
+# pip（直接由 GitHub 安裝）
+pip install git+https://github.com/trionnemesis/g0VMCP.git
 
-# pipx
-pipx install g0vmcp
-
-# pip
-pip install g0vmcp
+# 或 clone 後本地開發安裝
+git clone https://github.com/trionnemesis/g0VMCP.git
+cd g0VMCP
+pip install -e .
 ```
 
 ### 2. 加入 Claude Code
@@ -89,14 +94,14 @@ claude mcp add g0vmcp -- g0vmcp
 }
 ```
 
-使用 `uvx` 時：
+使用 `uvx`（尚未發佈至 PyPI，需指定 git 來源）：
 
 ```json
 {
   "mcpServers": {
     "g0vmcp": {
       "command": "uvx",
-      "args": ["g0vmcp"]
+      "args": ["--from", "git+https://github.com/trionnemesis/g0VMCP.git", "g0vmcp"]
     }
   }
 }
@@ -227,23 +232,13 @@ tests/
 
 **資料流**
 
-```
-PCC OpenData XML
-      │
-      ▼
-  g0vmcp-sync       半月增量抓取（招標 / 決標）
-      │
-      ▼
-  g0vmcp-enrich     明細頁 HTML 補充加值欄位
-      │
-      ▼
-  SQLite            持久化（~/.g0vmcp/g0vmcp.db）
-      │
-      ▼
-  FastMCP Server    MCP 協定對外提供查詢工具
-      │
-      ▼
-  Claude / Agent    自然語言操作政府採購資料
+```mermaid
+flowchart TD
+    A["PCC OpenData XML"] --> B["g0vmcp-sync<br/>半月增量抓取（招標 / 決標）"]
+    B --> C["g0vmcp-enrich<br/>明細頁 HTML 補充加值欄位"]
+    C --> D["SQLite<br/>持久化（~/.g0vmcp/g0vmcp.db）"]
+    D --> E["FastMCP Server<br/>MCP 協定對外提供查詢工具"]
+    E --> F["Claude / Agent<br/>自然語言操作政府採購資料"]
 ```
 
 ---
@@ -269,6 +264,12 @@ G0VMCP_DB=./dev.db python -m g0vmcp.mcp_server
 ## License
 
 [MIT](LICENSE)
+
+---
+
+## Related projects
+
+- [healthcare-opendata-mcp](https://github.com/trionnemesis/healthcare-opendata-mcp) — 健保署開放資料 × 政府採購標案（全機關）MCP，涵蓋 `pcc-tender` 全資料集與健保開放資料查詢；g0VMCP 為其衛福部資訊服務類子集的加值深化版本。
 
 ---
 
