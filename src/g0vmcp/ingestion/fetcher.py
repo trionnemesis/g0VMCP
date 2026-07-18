@@ -64,7 +64,10 @@ def _parse_roc_datetime(text: str) -> Optional[datetime]:
     year = int(roc_y) + 1911
     hour = int(hh) if hh is not None else 0
     minute = int(mm) if mm is not None else 0
-    return datetime(year, int(mo), int(d), hour, minute)
+    try:
+        return datetime(year, int(mo), int(d), hour, minute)
+    except ValueError:
+        return None
 
 
 class PccHttpFetcher:
@@ -149,6 +152,8 @@ class PccHttpFetcher:
                 break
         if not href:
             raise RuntimeError(f"no tpam detail link for {job_number}")
+        if not href.startswith("/") or "//" in href or "@" in href:
+            raise RuntimeError(f"unexpected detail href for {job_number}: must be relative path")
         detail_url = f"{_BASE}{href}"
         detail_resp = await self._http(detail_url)
         resolved = org_id or self._extract_org_id(resp.text, job_number)

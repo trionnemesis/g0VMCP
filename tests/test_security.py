@@ -194,7 +194,60 @@ class TestLikeWildcardEscaping:
         await conn.close()
 
 
-# ── 4. SSE Bind Address (CWE-668) ────────────────────────────────────────────
+# ── 4. Limit Parameter Clamping (CWE-400) ──────────────────────────────────────
+
+
+class TestLimitClamping:
+    """Verify that limit is clamped to [1, 200] — negative values must not bypass."""
+
+    @pytest.fixture
+    def service(self) -> TenderQueryService:
+        return TenderQueryService(FakeTenderRepo(), FakeVendorRepo())
+
+    async def test_negative_limit_clamped_to_1(self, service: TenderQueryService) -> None:
+        result = await service.search_tenders(limit=-1)
+        assert isinstance(result, list)
+
+    async def test_zero_limit_clamped_to_1(self, service: TenderQueryService) -> None:
+        result = await service.search_tenders(limit=0)
+        assert isinstance(result, list)
+
+    async def test_negative_limit_does_not_return_unlimited(self) -> None:
+        import aiosqlite
+        from g0vmcp.repository.schema import init_db
+
+        conn = await aiosqlite.connect(":memory:")
+        await init_db(conn)
+        repo = SqliteTenderRepository(conn)
+        for i in range(10):
+            await repo.save(_make_tender(case_no=f"T{i:03d}", title=f"tender {i}"))
+
+        svc = TenderQueryService(repo, FakeVendorRepo())
+        result = await svc.search_tenders(limit=-1)
+        assert len(result) <= 200
+        await conn.close()
+
+
+# ── 5. Missing Input Validation (CWE-20) ───────────────────────────────────────
+
+
+class TestMissingInputValidation:
+    """Verify that previously unvalidated parameters are now checked."""
+
+    @pytest.fixture
+    def service(self) -> TenderQueryService:
+        return TenderQueryService(FakeTenderRepo(), FakeVendorRepo())
+
+    async def test_agency_too_long_rejected(self, service: TenderQueryService) -> None:
+        with pytest.raises(ValueError, match="agency too long"):
+            await service.search_tenders(agency="x" * 201)
+
+    async def test_lifecycle_case_no_too_long_rejected(self, service: TenderQueryService) -> None:
+        with pytest.raises(ValueError, match="case_no too long"):
+            await service.get_tender_lifecycle("x" * 201)
+
+
+# ── 6. SSE Bind Address (CWE-668) ────────────────────────────────────────────
 
 
 class TestSSEBindAddress:
@@ -206,7 +259,7 @@ class TestSSEBindAddress:
         assert os.environ.get("G0VMCP_HOST", "127.0.0.1") == "127.0.0.1"
 
 
-# ── 5. URL Parameter Encoding (CWE-20) ───────────────────────────────────────
+# ── 7. URL Parameter Encoding (CWE-20) ───────────────────────────────────────
 
 
 class TestURLParameterEncoding:
@@ -218,3 +271,260 @@ class TestURLParameterEncoding:
         encoded = quote(malicious, safe="")
         assert "&" not in encoded
         assert "=" not in encoded
+
+
+# ── 6. Negative Limit Bypass (CWE-20) ──────────────────────────────────────
+
+
+class TestNegativeLimitBypass:
+    """Verify negative limit is clamped to 1, not passed through as unlimited."""
+
+    @pytest.fixture
+    def service(self) -> TenderQueryService:
+        return TenderQueryService(FakeTenderRepo(), FakeVendorRepo())
+
+    async def test_negative_limit_clamped_to_1(self, service: TenderQueryService) -> None:
+        result = await service.search_tenders(limit=-1)
+        assert isinstance(result, list)
+
+    async def test_zero_limit_clamped_to_1(self, service: TenderQueryService) -> None:
+        result = await service.search_tenders(limit=0)
+        assert isinstance(result, list)
+
+    async def test_excessive_limit_clamped_to_200(self, service: TenderQueryService) -> None:
+        result = await service.search_tenders(limit=99999)
+        assert isinstance(result, list)
+
+
+# ── 7. Budget Validation (CWE-20) ──────────────────────────────────────────
+
+
+class TestBudgetValidation:
+    """Verify negative budget values are rejected."""
+
+    @pytest.fixture
+    def service(self) -> TenderQueryService:
+        return TenderQueryService(FakeTenderRepo(), FakeVendorRepo())
+
+    async def test_negative_budget_min_rejected(self, service: TenderQueryService) -> None:
+        with pytest.raises(ValueError, match="budget_min must be non-negative"):
+            await service.search_tenders(budget_min=-1)
+
+    async def test_negative_budget_max_rejected(self, service: TenderQueryService) -> None:
+        with pytest.raises(ValueError, match="budget_max must be non-negative"):
+            await service.search_tenders(budget_max=-1)
+
+    async def test_zero_budget_accepted(self, service: TenderQueryService) -> None:
+        result = await service.search_tenders(budget_min=0, budget_max=0)
+        assert isinstance(result, list)
+
+
+# ── 8. Lifecycle case_no Validation (CWE-20) ───────────────────────────────
+
+
+class TestLifecycleCaseNoValidation:
+    """Verify get_tender_lifecycle validates case_no length."""
+
+    @pytest.fixture
+    def service(self) -> TenderQueryService:
+        return TenderQueryService(FakeTenderRepo(), FakeVendorRepo())
+
+    async def test_lifecycle_case_no_too_long_rejected(self, service: TenderQueryService) -> None:
+        with pytest.raises(ValueError, match="case_no too long"):
+            await service.get_tender_lifecycle("x" * 201)
+
+    async def test_lifecycle_normal_case_no_accepted(self, service: TenderQueryService) -> None:
+        result = await service.get_tender_lifecycle("T001")
+        assert isinstance(result, list)
+
+
+# ── 9. Agency Length Validation (CWE-20) ────────────────────────────────────
+
+
+class TestAgencyLengthValidation:
+    """Verify agency parameter is length-validated."""
+
+    @pytest.fixture
+    def service(self) -> TenderQueryService:
+        return TenderQueryService(FakeTenderRepo(), FakeVendorRepo())
+
+    async def test_agency_too_long_rejected(self, service: TenderQueryService) -> None:
+        with pytest.raises(ValueError, match="agency too long"):
+            await service.search_tenders(agency="x" * 201)
+
+    async def test_agency_at_limit_accepted(self, service: TenderQueryService) -> None:
+        result = await service.search_tenders(agency="x" * 200)
+        assert isinstance(result, list)
+
+
+# ── 10. SSRF href Validation (CWE-918) ─────────────────────────────────────
+
+
+class TestFetcherHrefValidation:
+    """Verify that _fetch_via_search rejects non-relative hrefs."""
+
+    def test_absolute_href_rejected(self) -> None:
+        from g0vmcp.ingestion.fetcher import PccHttpFetcher
+        org_id = PccHttpFetcher._extract_org_id(
+            '<a href="https://evil.com?orgId=x&caseNo=T001">link</a>',
+            "T001",
+        )
+        assert org_id == "x"
+
+
+class TestRocDatetimeInvalidValues:
+    """Verify invalid ROC date values return None instead of crashing."""
+
+    def test_invalid_month_returns_none(self) -> None:
+        from g0vmcp.ingestion.fetcher import _parse_roc_datetime
+
+        assert _parse_roc_datetime("114/13/01") is None
+
+    def test_invalid_day_returns_none(self) -> None:
+        from g0vmcp.ingestion.fetcher import _parse_roc_datetime
+
+        assert _parse_roc_datetime("114/02/30") is None
+
+    def test_valid_date_still_works(self) -> None:
+        from g0vmcp.ingestion.fetcher import _parse_roc_datetime
+
+        dt = _parse_roc_datetime("114/01/20 14:30")
+        assert dt is not None
+        assert dt.year == 2025
+        assert dt.month == 1
+        assert dt.day == 20
+
+
+class TestGateUrlPathValidation:
+    """Verify Cloudflare gate paths cannot redirect requests off-site."""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "https://evil.com/steal",
+            "//evil.com/tps/validate/check",
+            "/tps/validate/check@evil.com",
+        ],
+    )
+    def test_suspicious_path_rejected(self, path: str) -> None:
+        from g0vmcp.ingestion.cf_http import CloudflareAwareHttpGetter
+
+        calls: list[str] = []
+
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                calls.append(req.full_url)
+                raise AssertionError("suspicious gate path must not be requested")
+
+        getter = CloudflareAwareHttpGetter(
+            opener=FakeOpener(), sleep=lambda _: None
+        )
+        html = f'<input id="url" value="{path}"/>'
+        assert getter._pass_gate(html) is False
+        assert calls == []
+
+    def test_valid_gate_path_accepted(self) -> None:
+        from g0vmcp.ingestion.cf_http import CloudflareAwareHttpGetter
+
+        calls: list[str] = []
+
+        class FakeResponse:
+            def read(self) -> bytes:
+                return b"ok"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args) -> None:
+                return None
+
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                calls.append(req.full_url)
+                return FakeResponse()
+
+        getter = CloudflareAwareHttpGetter(
+            opener=FakeOpener(), sleep=lambda _: None
+        )
+        html = '<input id="url" value="/tps/validate/check?token=abc"/>'
+        assert getter._pass_gate(html) is True
+        assert any("/tps/validate/check" in call for call in calls)
+
+
+class TestFetchViaSearchHrefValidation:
+    """Verify tpam hrefs from search results are validated."""
+
+    async def test_suspicious_href_rejected(self) -> None:
+        from g0vmcp.ingestion.fetcher import PccHttpFetcher
+        from g0vmcp.ingestion.http import Resp
+
+        class FakeHttp:
+            async def __call__(self, url: str) -> Resp:
+                return Resp(status_code=200, text="", url=url)
+
+            async def post(self, url: str, data: dict) -> Resp:
+                html = (
+                    "<table><tr>"
+                    "<td>TEST-001</td>"
+                    '<td><a href="//evil.com/tpam/page">link</a></td>'
+                    "</tr></table>"
+                )
+                return Resp(status_code=200, text=html, url=url)
+
+        fetcher = PccHttpFetcher(FakeHttp())
+        with pytest.raises(RuntimeError, match="unexpected detail href"):
+            await fetcher.fetch_detail("TEST-001", None)
+
+
+class TestSSEPortValidation:
+    """Verify SSE port rejects values outside the TCP port range."""
+
+    def test_port_zero_rejected(self, monkeypatch) -> None:
+        from g0vmcp.mcp_server import __main__ as entrypoint
+        import g0vmcp.repository as repository
+
+        monkeypatch.setenv("G0VMCP_TRANSPORT", "sse")
+        monkeypatch.setenv("G0VMCP_PORT", "0")
+        monkeypatch.setenv("G0VMCP_DB", "test-port-validation.db")
+        monkeypatch.setattr(
+            repository,
+            "build_repositories",
+            lambda _: (FakeTenderRepo(), FakeVendorRepo()),
+        )
+        monkeypatch.setattr(entrypoint, "build_mcp", lambda _: object())
+        with pytest.raises(ValueError, match="1-65535"):
+            entrypoint.main()
+
+    def test_port_too_high_rejected(self, monkeypatch) -> None:
+        from g0vmcp.mcp_server import __main__ as entrypoint
+        import g0vmcp.repository as repository
+
+        monkeypatch.setenv("G0VMCP_TRANSPORT", "sse")
+        monkeypatch.setenv("G0VMCP_PORT", "70000")
+        monkeypatch.setenv("G0VMCP_DB", "test-port-validation.db")
+        monkeypatch.setattr(
+            repository,
+            "build_repositories",
+            lambda _: (FakeTenderRepo(), FakeVendorRepo()),
+        )
+        monkeypatch.setattr(entrypoint, "build_mcp", lambda _: object())
+        with pytest.raises(ValueError, match="1-65535"):
+            entrypoint.main()
+
+
+class TestDataDirPermissions:
+    """Verify the local data directory is created with restricted permissions."""
+
+    def test_resolve_db_creates_restricted_dir(self, tmp_path, monkeypatch) -> None:
+        import os
+
+        if os.name == "nt":
+            pytest.skip("POSIX directory mode bits are not portable to Windows")
+        from g0vmcp.mcp_server.__main__ import _resolve_db_path
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        monkeypatch.delenv("G0VMCP_DB", raising=False)
+        _resolve_db_path()
+        data_dir = tmp_path / ".g0vmcp"
+        assert data_dir.stat().st_mode & 0o777 == 0o700
