@@ -1,0 +1,36 @@
+name: 🐛 Bug 回報
+description: 程式錯誤、當機或非預期行為
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: 感謝回報！請盡量填寫以下資訊，能大幅加快處理速度。
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 發生了什麼？
+      description: 描述問題與預期行為的差異
+      placeholder: 執行 g0vmcp-sync 時出現…
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 重現步驟
+      placeholder: |
+        1. 執行 `g0vmcp-sync`
+        2. 執行 `g0vmcp-enrich --batch 50`
+        3. 出現錯誤…
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 錯誤訊息 / Log
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: 環境
+      placeholder: "Python 3.11 / Windows 11 / g0VMCP main@abc1234"

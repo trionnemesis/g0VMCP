@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>g0VMCP — 台灣政府採購標案情報 MCP</title>
+<meta name="description" content="用自然語言查詢衛福部資訊服務類標案。g0VMCP 是聚合政府電子採購網資料的 Model Context Protocol 伺服器，補完預算、底價、投標家數等加值欄位。">
+<meta property="og:title" content="g0VMCP — 台灣政府採購標案情報 MCP">
+<meta property="og:description" content="讓 Claude 用一句話查出政府標案：預算、底價、生命週期、廠商得標紀錄。">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://trionnemesis.github.io/g0VMCP/">
+<style>
+:root{
+  --bg:#0d1117;--bg2:#161b22;--fg:#e6edf3;--muted:#8b949e;
+  --accent:#58a6ff;--accent2:#3fb950;--border:#30363d;--code:#161b22;
+}
+@media (prefers-color-scheme: light){
+  :root{--bg:#ffffff;--bg2:#f6f8fa;--fg:#1f2328;--muted:#57606a;
+  --accent:#0969da;--accent2:#1a7f37;--border:#d0d7de;--code:#f6f8fa;}
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:-apple-system,"Segoe UI","Noto Sans TC",sans-serif;line-height:1.7}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+.wrap{max-width:880px;margin:0 auto;padding:0 24px}
+header{padding:80px 0 56px;text-align:center;border-bottom:1px solid var(--border)}
+h1{font-size:2.6rem;letter-spacing:-.02em}
+h1 .accent{color:var(--accent)}
+.tagline{font-size:1.25rem;color:var(--muted);margin:16px auto 28px;max-width:600px}
+.btns{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.btn{display:inline-block;padding:10px 22px;border-radius:8px;font-weight:600;border:1px solid var(--border)}
+.btn.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.btn.primary:hover{opacity:.9;text-decoration:none}
+.btn:hover{text-decoration:none;border-color:var(--accent)}
+section{padding:56px 0;border-bottom:1px solid var(--border)}
+h2{font-size:1.6rem;margin-bottom:24px}
+.chat{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:20px 24px;margin:12px 0}
+.chat .q{font-weight:600}
+.chat .a{color:var(--muted);margin-top:8px;font-size:.95rem}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:20px}
+.card h3{font-size:1.05rem;margin-bottom:8px}
+.card p{color:var(--muted);font-size:.92rem}
+pre{background:var(--code);border:1px solid var(--border);border-radius:10px;padding:16px 20px;overflow-x:auto;font-size:.88rem;line-height:1.6}
+code{font-family:ui-monospace,"Cascadia Code",Consolas,monospace}
+.step{display:flex;gap:16px;margin:20px 0;align-items:flex-start}
+.step .num{flex:none;width:32px;height:32px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700}
+.step > div{min-width:0;flex:1}
+.step pre{margin-top:8px}
+footer{padding:40px 0;text-align:center;color:var(--muted);font-size:.9rem}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>g0V<span class="accent">MCP</span></h1>
+    <p class="tagline">用一句話，問出台灣政府採購標案情報。<br>衛福部資訊服務類標案 × Model Context Protocol。</p>
+    <div class="btns">
+      <a class="btn primary" href="https://github.com/trionnemesis/g0VMCP">GitHub →</a>
+      <a class="btn" href="https://github.com/trionnemesis/g0VMCP#快速開始">快速開始</a>
+      <a class="btn" href="https://github.com/trionnemesis/g0VMCP/issues/new/choose">回報問題</a>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2>💬 裝好之後，直接這樣問 Claude</h2>
+    <div class="chat">
+      <p class="q">「衛福部最近三個月有哪些預算 500 萬以上、還在招標中的資訊服務案？」</p>
+      <p class="a">→ search_tenders 依機關、狀態、預算、日期多維篩選，回傳標案摘要清單</p>
+    </div>
+    <div class="chat">
+      <p class="q">「這個標案從公告到決標經過哪些更正？底價和決標金額差多少？」</p>
+      <p class="a">→ get_tender_lifecycle + get_tender_detail 還原完整事件時間線與加值欄位</p>
+    </div>
+    <div class="chat">
+      <p class="q">「統編 12345678 這家廠商過去拿過哪些衛福部的案子？」</p>
+      <p class="a">→ get_vendor_awards 以統編反查歷史得標紀錄</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>✨ 為什麼需要 g0VMCP？</h2>
+    <div class="grid">
+      <div class="card"><h3>🧩 補完缺漏欄位</h3><p>公開資料集沒有的預算金額、底價、投標家數、開標時間，自動從明細頁抓取補完。</p></div>
+      <div class="card"><h3>🔄 完整生命週期</h3><p>招標 → 更正 → 決標的分散公告，聚合成單一標案的完整事件時間線。</p></div>
+      <div class="card"><h3>🤖 AI 原生介面</h3><p>透過 MCP 協定，Claude 或任何相容 Agent 都能直接用自然語言查詢。</p></div>
+      <div class="card"><h3>🛠 自動化同步</h3><p>CLI 半月增量抓取、Cloudflare 擋牆自動退避，SQLite 本地儲存零依賴。</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>🚀 三步驟開始</h2>
+    <div class="step"><span class="num">1</span><div>安裝（Python 3.11+）
+      <pre><code>pip install git+https://github.com/trionnemesis/g0VMCP.git</code></pre></div></div>
+    <div class="step"><span class="num">2</span><div>加入 Claude Code
+      <pre><code>claude mcp add g0vmcp -- g0vmcp</code></pre></div></div>
+    <div class="step"><span class="num">3</span><div>同步資料
+      <pre><code>g0vmcp-sync && g0vmcp-enrich</code></pre></div></div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p><a href="https://github.com/trionnemesis/g0VMCP">GitHub</a> ・
+       <a href="https://github.com/trionnemesis/g0VMCP/issues">Issues</a> ・
+       <a href="https://github.com/trionnemesis/g0VMCP/discussions">Discussions</a> ・
+       MIT License</p>
+    <p style="margin-top:8px">資料來源：<a href="https://web.pcc.gov.tw">政府電子採購網</a>（依政府資料開放授權條款使用）</p>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,25 @@
+name: 📊 資料問題回報
+description: 標案資料錯誤、欄位缺漏或與採購網不一致
+title: "[Data] "
+labels: ["data-quality"]
+body:
+  - type: input
+    id: case-no
+    attributes:
+      label: 標案案號（case_no）
+      placeholder: "112-XXXX-01"
+    validations:
+      required: true
+  - type: textarea
+    id: issue
+    attributes:
+      label: 資料問題描述
+      description: 哪個欄位錯誤或缺漏？正確值應該是什麼？
+      placeholder: get_tender_detail 回傳的預算金額為 null，但採購網明細頁顯示為 5,000,000
+    validations:
+      required: true
+  - type: input
+    id: source-url
+    attributes:
+      label: 採購網原始頁面連結
+      placeholder: "https://web.pcc.gov.tw/…"

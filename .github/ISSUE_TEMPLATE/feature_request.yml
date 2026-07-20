@@ -1,0 +1,22 @@
+name: 💡 功能許願
+description: 新功能建議（擴大機關範圍、新查詢維度…）
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解決什麼問題？
+      placeholder: 我想查詢衛福部以外的機關，例如教育部的資訊標案…
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: 期望的做法
+      placeholder: 希望 search_tenders 增加一個參數…
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 目前的替代方案
+      placeholder: 現在只能自己去採購網手動查…
