@@ -512,6 +512,46 @@ class TestSSEPortValidation:
             entrypoint.main()
 
 
+class TestFastMcpDependencyFloor:
+    """Verify pyproject.toml's fastmcp floor excludes known-vulnerable releases.
+
+    fastmcp < 3.2.0 is affected by CVE-2026-32871 (critical, CVSS 9.8 —
+    unescaped path-parameter substitution in the OpenAPI provider's
+    buildurl() enabling SSRF/path traversal) and requires >= 3.2.0 for the
+    related OAuth confused-deputy / credential-forwarding fixes. This repo's
+    server.py builds tools directly (no OpenAPI-from-spec, no OAuth
+    provider), so the vulnerable code paths are not reachable today — but
+    the dependency floor should not silently permit installing a
+    known-vulnerable version in a future/fresh environment.
+    """
+
+    def test_pyproject_floor_excludes_vulnerable_fastmcp(self) -> None:
+        import re
+        from pathlib import Path
+
+        from packaging.requirements import Requirement
+        from packaging.version import Version
+
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        text = pyproject.read_text(encoding="utf-8")
+        m = re.search(r'"(fastmcp[^"]*)"', text)
+        assert m, "fastmcp dependency spec not found in pyproject.toml"
+        req = Requirement(m.group(1))
+        # Every version satisfying the declared specifier must be >= 3.2.0.
+        assert not req.specifier.contains(Version("3.1.0")), (
+            "fastmcp floor permits versions vulnerable to CVE-2026-32871 "
+            "(SSRF/path traversal, fixed in 3.2.0)"
+        )
+        assert req.specifier.contains(Version("3.2.0"))
+
+    def test_installed_fastmcp_meets_floor(self) -> None:
+        from importlib.metadata import version
+
+        from packaging.version import Version
+
+        assert Version(version("fastmcp")) >= Version("3.2.0")
+
+
 class TestDataDirPermissions:
     """Verify the local data directory is created with restricted permissions."""
 
