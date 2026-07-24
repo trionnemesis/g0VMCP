@@ -226,6 +226,15 @@ python -m pytest
 G0VMCP_DB=./dev.db python -m g0vmcp.mcp_server
 ```
 
+The repo pins exact dependency versions in `uv.lock`. If you have [uv](https://github.com/astral-sh/uv) installed, reproduce that exact environment and run tests with:
+
+```bash
+uv sync --locked --extra dev
+uv run pytest
+```
+
+After changing a dependency in `pyproject.toml`, regenerate the lockfile with `uv lock` and commit it alongside the change.
+
 ## Trust and data use
 
 - All data comes from the [public e-procurement portal](https://web.pcc.gov.tw) and is used under the Taiwan Open Government Data License.

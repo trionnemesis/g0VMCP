@@ -224,6 +224,15 @@ python -m pytest
 G0VMCP_DB=./dev.db python -m g0vmcp.mcp_server
 ```
 
+專案在 `uv.lock` 中鎖定了確切的依賴版本。若本機已安裝 [uv](https://github.com/astral-sh/uv)，可用以下指令重現完全相同的環境並跑測試：
+
+```bash
+uv sync --locked --extra dev
+uv run pytest
+```
+
+修改 `pyproject.toml` 的依賴後，記得用 `uv lock` 重新產生 lockfile，並與該次變更一起 commit。
+
 ## 信任與資料使用
 
 - 所有資料皆來自[政府電子採購網](https://web.pcc.gov.tw)公開頁面，依政府資料開放授權條款使用。
