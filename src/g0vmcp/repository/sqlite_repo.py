@@ -240,8 +240,10 @@ class SqliteTenderRepository:
             )
             params.append(_date_to_str(date_to))
 
+        # clauses 的每一項都是本函式內的字面量(見上),使用者輸入一律走 params 的
+        # `?` 綁定,從不進入 SQL 文字 — bandit B608 在此為誤報。
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        sql = f"SELECT t.* FROM tenders t {where} ORDER BY t.tender_id LIMIT ?"
+        sql = f"SELECT t.* FROM tenders t {where} ORDER BY t.tender_id LIMIT ?"  # nosec B608
         params.append(limit)
 
         cur = await self._conn.execute(sql, tuple(params))
