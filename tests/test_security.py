@@ -360,16 +360,49 @@ class TestAgencyLengthValidation:
 # ── 10. SSRF href Validation (CWE-918) ─────────────────────────────────────
 
 
-class TestFetcherHrefValidation:
-    """Verify that _fetch_via_search rejects non-relative hrefs."""
+class TestOrgIdFromUntrustedHref:
+    """org_id 取自搜尋結果頁的 href(不可信輸入),但只能當成參數值使用。
 
-    def test_absolute_href_rejected(self) -> None:
+    這裡要鎖住的不變量不是「拒絕跨站 href」——_extract_org_id 確實會從
+    任何含 orgId 的 href 取值 —— 而是「取到的值永遠只會被 quote() 後放進
+    以 _BASE 組出的 URL,不能決定請求目標主機」。先前這個 class 名為
+    test_absolute_href_rejected,但斷言的其實是 org_id 被取出,名稱與
+    斷言互相矛盾,容易在日後審查時造成誤判。
+    """
+
+    def test_org_id_extracted_from_offsite_href(self) -> None:
         from g0vmcp.ingestion.fetcher import PccHttpFetcher
+
         org_id = PccHttpFetcher._extract_org_id(
             '<a href="https://evil.com?orgId=x&caseNo=T001">link</a>',
             "T001",
         )
+        # 記錄現況:跨站 href 的 orgId 仍會被取用
         assert org_id == "x"
+
+    async def test_detail_request_stays_on_base_host(self) -> None:
+        """即使 org_id 含有注入字元,請求主機仍必須是 web.pcc.gov.tw。"""
+        from urllib.parse import urlparse
+
+        from g0vmcp.ingestion.fetcher import PccHttpFetcher
+        from g0vmcp.ingestion.http import Resp
+
+        requested: list[str] = []
+
+        class FakeHttp:  # 無 post → 走 readBulletion 直連分支
+            async def __call__(self, url: str) -> Resp:
+                requested.append(url)
+                return Resp(status_code=200, text="<html></html>", url=url)
+
+        fetcher = PccHttpFetcher(FakeHttp())
+        try:
+            await fetcher.fetch_detail("T001", "evil.com/?x=&orgId=y")
+        except Exception:
+            pass  # 空 HTML 的解析結果不是本測試的重點
+
+        assert requested, "應該有送出請求"
+        for url in requested:
+            assert urlparse(url).hostname == "web.pcc.gov.tw", url
 
 
 class TestRocDatetimeInvalidValues:
