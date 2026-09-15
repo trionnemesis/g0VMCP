@@ -568,3 +568,101 @@ class TestDataDirPermissions:
         _resolve_db_path()
         data_dir = tmp_path / ".g0vmcp"
         assert data_dir.stat().st_mode & 0o777 == 0o700
+
+
+# ── 11. Outbound URL Guard (CWE-918 / CWE-22) ────────────────────────────────
+
+
+class TestOutboundUrlGuard:
+    """urllib 的 build_opener() 預設帶 FileHandler/FTPHandler/DataHandler。
+
+    任何非 https://web.pcc.gov.tw 的 URL 走到 opener 都會被真的開啟 ——
+    file:///etc/passwd 會被讀回來當 HTML。護欄把 sink 本身關掉。
+    """
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "file:///etc/passwd",
+            "ftp://evil.example.com/x",
+            "data:text/html,<b>x</b>",
+            "http://web.pcc.gov.tw/tps/x",          # 明文
+            "https://evil.example.com/tps/x",       # 非 PCC host
+            "https://web.pcc.gov.tw@evil.example.com/x",  # userinfo 混淆
+        ],
+    )
+    def test_rejected(self, url: str) -> None:
+        from g0vmcp.ingestion.url_guard import UnsafeUrlError, assert_pcc_url
+
+        with pytest.raises(UnsafeUrlError):
+            assert_pcc_url(url)
+
+    def test_pcc_https_url_accepted(self) -> None:
+        from g0vmcp.ingestion.url_guard import assert_pcc_url
+
+        url = "https://web.pcc.gov.tw/tps/QueryTender/query/searchTenderDetail?pk=1"
+        assert assert_pcc_url(url) == url
+
+    async def test_getter_refuses_file_scheme(self, tmp_path) -> None:
+        """回歸:CloudflareAwareHttpGetter 先前會讀回本機檔案內容。"""
+        from g0vmcp.ingestion.cf_http import CloudflareAwareHttpGetter
+        from g0vmcp.ingestion.url_guard import UnsafeUrlError
+
+        secret = tmp_path / "secret.txt"
+        secret.write_text("SENSITIVE", encoding="utf-8")
+        getter = CloudflareAwareHttpGetter(sleep=lambda _: None)
+        with pytest.raises(UnsafeUrlError):
+            await getter(secret.as_uri())
+
+
+# ── 12. Gate Path Validation in enrich_open_date (CWE-918) ───────────────────
+
+
+class TestGatePathHelper:
+    """`_BASE + path` 是字串串接:path 若含 @ 或 // 就能換掉真正的 host。"""
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "@evil.example.com/steal",
+            "//evil.example.com/x",
+            "https://evil.example.com/steal",
+            "/tps/validate/check@evil.example.com",
+        ],
+    )
+    def test_unsafe_gate_path_rejected(self, path: str) -> None:
+        from g0vmcp.ingestion.url_guard import safe_gate_path
+
+        assert safe_gate_path(path) is None
+
+    def test_valid_gate_path_accepted(self) -> None:
+        from g0vmcp.ingestion.url_guard import safe_gate_path
+
+        assert safe_gate_path("/tps/validate/check?token=abc") == (
+            "/tps/validate/check?token=abc"
+        )
+
+    def test_enrich_script_pass_gate_rejects_userinfo_path(self, monkeypatch) -> None:
+        """回歸:cf_http 已擋,但 scripts/enrich_open_date.py 先前漏掉同一檢查。"""
+        import importlib
+
+        enrich = importlib.import_module("enrich_open_date")
+        calls: list[str] = []
+        monkeypatch.setattr(enrich, "_raw_get", lambda url: calls.append(url))
+        monkeypatch.setattr(enrich.time, "sleep", lambda _: None)
+
+        html = '<input id="url" value="@evil.example.com/steal"/>'
+        assert enrich._pass_gate(html) is False
+        assert calls == []
+
+    def test_enrich_script_pass_gate_accepts_relative_path(self, monkeypatch) -> None:
+        import importlib
+
+        enrich = importlib.import_module("enrich_open_date")
+        calls: list[str] = []
+        monkeypatch.setattr(enrich, "_raw_get", lambda url: calls.append(url))
+        monkeypatch.setattr(enrich.time, "sleep", lambda _: None)
+
+        html = '<input id="url" value="/tps/validate/check?token=abc"/>'
+        assert enrich._pass_gate(html) is True
+        assert calls == ["https://web.pcc.gov.tw/tps/validate/check?token=abc"]

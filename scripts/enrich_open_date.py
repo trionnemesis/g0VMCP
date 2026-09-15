@@ -33,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from g0vmcp.contracts import Money
 from g0vmcp.ingestion.fetcher import _parse_money, _parse_roc_datetime
+from g0vmcp.ingestion.url_guard import assert_pcc_url, safe_gate_path
 from g0vmcp.repository import build_repositories
 
 DB_PATH = str(Path(__file__).resolve().parents[1] / "g0vmcp.db")
@@ -95,7 +96,7 @@ _GATE_MAX_RETRY = 3
 
 
 def _raw_get(url: str) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": _UA})
+    req = urllib.request.Request(assert_pcc_url(url), headers={"User-Agent": _UA})
     with _OPENER.open(req, timeout=40) as r:
         return r.read().decode("utf-8", "replace")
 
@@ -109,8 +110,13 @@ def _pass_gate(html: str) -> bool:
     m = _GATE_RE.search(html)
     if not m:
         return False
+    # cf_http.CloudflareAwareHttpGetter 早就擋了這段,本腳本先前漏掉:
+    # value="@evil.com/x" 會讓 _BASE + path 的 host 變成 evil.com,cookie jar 跟著外送
+    path = safe_gate_path(_htmllib.unescape(m.group(1)))
+    if path is None:
+        return False
     time.sleep(3)  # 尊重速率限制的計時等候
-    _raw_get(_BASE + _htmllib.unescape(m.group(1)))
+    _raw_get(_BASE + path)
     return True
 
 
@@ -130,7 +136,7 @@ def _http_get(url: str) -> str:
 def _http_post(url: str, data: dict) -> str:
     body = urllib.parse.urlencode(data).encode()
     req = urllib.request.Request(
-        url,
+        assert_pcc_url(url),
         data=body,
         headers={"User-Agent": _UA, "Content-Type": "application/x-www-form-urlencoded"},
     )
