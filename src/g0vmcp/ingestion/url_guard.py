@@ -35,6 +35,15 @@ def assert_pcc_url(url: str) -> str:
     return url
 
 
+class PccRedirectHandler(__import__("urllib.request", fromlist=["HTTPRedirectHandler"]).HTTPRedirectHandler):
+    """Validate every resolved urllib redirect target before following it."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return super().redirect_request(
+            req, fp, code, msg, headers, assert_pcc_url(newurl)
+        )
+
+
 def safe_gate_path(path: str) -> str | None:
     """閘門頁 value 可安全接在 _BASE 後面時回傳它,否則回 None。
 

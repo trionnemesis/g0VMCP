@@ -666,3 +666,64 @@ class TestGatePathHelper:
         html = '<input id="url" value="/tps/validate/check?token=abc"/>'
         assert enrich._pass_gate(html) is True
         assert calls == ["https://web.pcc.gov.tw/tps/validate/check?token=abc"]
+
+
+# ── 13. Redirect Target Validation (CWE-918) ──────────────────────────────────
+
+
+class TestRedirectTargetValidation:
+    """Every urllib redirect must remain on https://web.pcc.gov.tw."""
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            "https://evil.example.com/steal",
+            "http://web.pcc.gov.tw/downgrade",
+            "ftp://web.pcc.gov.tw/archive",
+            "https://web.pcc.gov.tw@evil.example.com/steal",
+        ],
+    )
+    def test_redirect_handler_rejects_unsafe_target(self, target: str) -> None:
+        import urllib.request
+
+        from g0vmcp.ingestion.url_guard import PccRedirectHandler, UnsafeUrlError
+
+        handler = PccRedirectHandler()
+        req = urllib.request.Request("https://web.pcc.gov.tw/start")
+        with pytest.raises(UnsafeUrlError):
+            handler.redirect_request(req, None, 302, "Found", {}, target)
+
+    def test_redirect_handler_allows_pcc_https_target(self) -> None:
+        import urllib.request
+
+        from g0vmcp.ingestion.url_guard import PccRedirectHandler
+
+        target = "https://web.pcc.gov.tw/next"
+        handler = PccRedirectHandler()
+        req = urllib.request.Request("https://web.pcc.gov.tw/start")
+        redirected = handler.redirect_request(req, None, 302, "Found", {}, target)
+
+        assert redirected is not None
+        assert redirected.full_url == target
+
+    def test_getter_default_opener_installs_redirect_guard(self) -> None:
+        from g0vmcp.ingestion.cf_http import CloudflareAwareHttpGetter
+        from g0vmcp.ingestion.url_guard import PccRedirectHandler
+
+        getter = CloudflareAwareHttpGetter(sleep=lambda _: None)
+        assert any(
+            isinstance(handler, PccRedirectHandler)
+            for handler in getter._opener.handlers
+        )
+
+    def test_enrich_default_opener_installs_redirect_guard(self) -> None:
+        import importlib
+
+        from g0vmcp.ingestion.url_guard import PccRedirectHandler
+
+        enrich = importlib.import_module("enrich_open_date")
+        assert any(
+            isinstance(handler, PccRedirectHandler)
+            for handler in enrich._OPENER.handlers
+        )
+

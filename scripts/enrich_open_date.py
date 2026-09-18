@@ -33,7 +33,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from g0vmcp.contracts import Money
 from g0vmcp.ingestion.fetcher import _parse_money, _parse_roc_datetime
-from g0vmcp.ingestion.url_guard import assert_pcc_url, safe_gate_path
+from g0vmcp.ingestion.url_guard import (
+    PccRedirectHandler,
+    assert_pcc_url,
+    safe_gate_path,
+)
 from g0vmcp.repository import build_repositories
 
 DB_PATH = str(Path(__file__).resolve().parents[1] / "g0vmcp.db")
@@ -89,7 +93,8 @@ def _parse_int(text: str) -> Optional[int]:
 # 共用 cookie jar:PCC 對密集請求會回計時閘門頁(/tps/validate),
 # 通過後設驗證 cookie;沿用同一 opener 才能保留。
 _OPENER = urllib.request.build_opener(
-    urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+    PccRedirectHandler(),
+    urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
 )
 _GATE_RE = re.compile(r'id="url"[^>]*value="([^"]*)"')
 _GATE_MAX_RETRY = 3

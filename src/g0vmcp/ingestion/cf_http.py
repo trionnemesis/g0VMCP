@@ -17,7 +17,11 @@ import urllib.request
 
 from g0vmcp.contracts import BlockedError
 from g0vmcp.ingestion.http import Resp
-from g0vmcp.ingestion.url_guard import assert_pcc_url, safe_gate_path
+from g0vmcp.ingestion.url_guard import (
+    PccRedirectHandler,
+    assert_pcc_url,
+    safe_gate_path,
+)
 
 _BASE = "https://web.pcc.gov.tw"
 _UA = (
@@ -51,7 +55,8 @@ class CloudflareAwareHttpGetter:
         max_retry: int = _GATE_MAX_RETRY,
     ) -> None:
         self._opener = opener or urllib.request.build_opener(
-            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+            PccRedirectHandler(),
+            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
         )
         self._sleep = sleep
         self._max_retry = max_retry
