@@ -16,6 +16,7 @@ cookie jar(含 PCC 驗證 cookie)就跟著送到攻擊者主機。
 from __future__ import annotations
 
 from urllib.parse import urlparse
+from urllib.request import HTTPRedirectHandler
 
 PCC_HOST = "web.pcc.gov.tw"
 
@@ -35,7 +36,7 @@ def assert_pcc_url(url: str) -> str:
     return url
 
 
-class PccRedirectHandler(__import__("urllib.request", fromlist=["HTTPRedirectHandler"]).HTTPRedirectHandler):
+class PccRedirectHandler(HTTPRedirectHandler):
     """Validate every resolved urllib redirect target before following it."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
