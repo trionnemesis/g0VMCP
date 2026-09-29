@@ -4,6 +4,16 @@ web.pcc.gov.tw 對密集請求回「計時閘門」頁(/tps/validate/check);通�
 cookie,沿用同一 cookie jar 才能保留。本 class 把 scripts/enrich_open_date.py 的
 閘門偵測/通過/重試邏輯萃取為可注入的 async getter。底層為同步 urllib,以
 asyncio.to_thread 包成 async,不阻塞事件迴圈。重試耗盡 → 拋 contracts.BlockedError。
+
+出站邊界有三道互補的護欄,原本分散在兩個 PR 裡,此處合為一處:
+  1. `_require_pcc_url` —— host/scheme 釘選。urllib 的 build_opener 預設帶
+     FileHandler 與 FTPHandler,`file:///etc/passwd` 是可達的 scheme;且預設
+     redirect handler 會跟隨 Location 到任意主機(CWE-918 / CWE-22)。
+  2. `is_safe_relative_path` —— 上游 HTML 給的相對路徑能否安全接在 _BASE 後。
+     `@` 會讓 base 變成 userinfo,一個 href 就能換掉 host。
+  3. `read_capped_bytes` —— 回應(含轉址中間回應)讀取上限(CWE-400)。
+`PinnedBoundedRedirectHandler` 同時執行 1 與 3:驗證轉址目標,並限制跟隨前
+被 drain 的 body。
 """
 from __future__ import annotations
 
@@ -26,9 +36,32 @@ _UA = (
 _GATE_RE = re.compile(r'id="url"[^>]*value="([^"]*)"')
 _GATE_MAX_RETRY = 3
 _GATE_WAIT_SECONDS = 3.0
+_ALLOWED_HOST = urllib.parse.urlparse(_BASE).hostname or ""
 # 單次回應讀取上限(含轉址中間回應)。既有明細 fixture 小於 8 MiB;
 # 正式來源的所有頁面大小並未逐一驗證。無上限讀取可造成資源耗用(CWE-400)。
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+
+
+def _require_pcc_url(url: str) -> str:
+    """只允許 https://web.pcc.gov.tw 的 URL 真正送出請求。
+
+    深度防禦(CWE-918 / CWE-22):
+      1. urllib.request.build_opener() 預設帶 FileHandler 與 FTPHandler,
+         因此 file:///etc/passwd、ftp://… 都是可達的 scheme;呼叫端一旦
+         把外部字串傳進來就變成本機檔案讀取。
+      2. 預設的 HTTPRedirectHandler 會跟隨 Location 到任意 http/https/ftp
+         主機 —— 上游 open redirect 或站台被入侵即可把請求導向
+         127.0.0.1 / 169.254.169.254。
+    呼叫端(fetcher)已對解析出的 href 做相對路徑檢查;本函式是網路邊界上
+    最後一道,同時覆蓋 redirect 目標。
+    """
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if parsed.scheme.lower() != "https" or host != _ALLOWED_HOST:
+        raise BlockedError(f"refusing outbound request outside {_BASE}: {url!r}")
+    if parsed.username is not None or parsed.password is not None:
+        raise BlockedError("refusing outbound request carrying URL credentials")
+    return url
 
 
 def is_safe_relative_path(path: str) -> bool:
@@ -38,6 +71,9 @@ def is_safe_relative_path(path: str) -> bool:
     `https://web.pcc.gov.tw@evil.com/x` 的實際 host 是 evil.com
     —— 一個上游 href 就能把請求帶離站外(CWE-918 SSRF / CWE-601)。
     `//` 開頭則是 protocol-relative,同樣換掉 host。
+
+    與 `_require_pcc_url` 是互補而非重複:本函式在「組 URL 之前」擋掉壞路徑
+    (呼叫端因此能安然跳過該筆資料),`_require_pcc_url` 則是送出前的最後防線。
 
     公開給 scripts/ 共用:同樣的判斷先前在 fetcher 與本模組各寫一份,
     維運腳本漏掉,正是這次要消掉的重複。
@@ -72,8 +108,17 @@ class _BoundedRedirectResponse:
         return read_capped_bytes(self._response, self._url, amt)
 
 
-class BoundedRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """沿用 urllib 的轉址目的地、方法、cookie 與迴圈政策,限制中間回應。"""
+class PinnedBoundedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """轉址時同時做兩件事:驗證目標、限制中間回應。
+
+    兩者都必須在同一個 handler 裡 —— build_opener 以傳入的 handler 取代同類的
+    預設 handler,所以掛兩個各做一半的 redirect handler,後者會頂掉前者,
+    其中一道護欄會靜默失效。
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        _require_pcc_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
     def http_error_302(self, req, fp, code, msg, headers):
         return super().http_error_302(
@@ -86,8 +131,10 @@ class BoundedRedirectHandler(urllib.request.HTTPRedirectHandler):
     http_error_308 = http_error_302
 
 
-# 舊私有名稱保留為別名:外部已有引用,改名不應是破壞性變更。
-_BoundedRedirectHandler = BoundedRedirectHandler
+# 兩個來源 PR 各自用過的名稱都保留為別名:外部已有引用,改名不應是破壞性變更。
+BoundedRedirectHandler = PinnedBoundedRedirectHandler
+_BoundedRedirectHandler = PinnedBoundedRedirectHandler
+_PinnedRedirectHandler = PinnedBoundedRedirectHandler
 _read_capped_bytes = read_capped_bytes
 
 
@@ -112,9 +159,11 @@ class CloudflareAwareHttpGetter:
         sleep=time.sleep,
         max_retry: int = _GATE_MAX_RETRY,
     ) -> None:
+        # build_opener 會以傳入的 handler 取代同類的預設 handler,
+        # 故 PinnedBoundedRedirectHandler 會頂掉預設的 HTTPRedirectHandler。
         self._opener = opener or urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
-            BoundedRedirectHandler(),
+            PinnedBoundedRedirectHandler(),
         )
         self._sleep = sleep
         self._max_retry = max_retry
@@ -130,14 +179,16 @@ class CloudflareAwareHttpGetter:
         return read_capped_bytes(r, url).decode("utf-8", "replace")
 
     def _raw_get(self, url: str) -> str:
-        req = urllib.request.Request(url, headers={"User-Agent": _UA})
+        req = urllib.request.Request(
+            _require_pcc_url(url), headers={"User-Agent": _UA}
+        )
         with self._opener.open(req, timeout=40) as r:
             return self._read_capped(r, url)
 
     def _raw_post(self, url: str, data: dict) -> str:
         body = urllib.parse.urlencode(data).encode()
         req = urllib.request.Request(
-            url,
+            _require_pcc_url(url),
             data=body,
             headers={
                 "User-Agent": _UA,
