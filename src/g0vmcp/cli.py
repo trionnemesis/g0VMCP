@@ -77,12 +77,12 @@ async def _sync(tender_repo, db_path: str, args: argparse.Namespace) -> None:
         xml = await fetch_xml(tender_xml_url(y, m, h))
         if xml is None:
             continue
-        rows = parse_tender_xml(xml)
-        stats = await pipe.ingest_tender_rows(rows)
+        tender_rows = parse_tender_xml(xml)
+        stats = await pipe.ingest_tender_rows(tender_rows)
         t_saved += stats.saved
         t_skip_org += stats.skipped_non_mohw
         t_skip_bl += stats.skipped_blacklist
-        print(f"  {y}/{m:02d}-{h}: {len(rows):>5} 筆 → 衛福部IT候選 {stats.saved}")
+        print(f"  {y}/{m:02d}-{h}: {len(tender_rows):>5} 筆 → 衛福部IT候選 {stats.saved}")
     print(f"招標落庫 {t_saved}（非衛福部略過 {t_skip_org}、黑名單略過 {t_skip_bl}）")
 
     print(f"\n=== 決標 baseline（近 {args.award_months} 月）===")
@@ -91,12 +91,12 @@ async def _sync(tender_repo, db_path: str, args: argparse.Namespace) -> None:
         xml = await fetch_xml(award_xml_url(y, m, h))
         if xml is None:
             continue
-        rows = parse_award_xml(xml)
-        stats = await pipe.ingest_award_rows(rows)
+        award_rows = parse_award_xml(xml)
+        stats = await pipe.ingest_award_rows(award_rows)
         a_saved += stats.saved
         a_skip_org += stats.skipped_non_mohw
         a_skip_bl += stats.skipped_blacklist
-        print(f"  {y}/{m:02d}-{h}: {len(rows):>5} 筆 → 衛福部IT候選 {stats.saved}")
+        print(f"  {y}/{m:02d}-{h}: {len(award_rows):>5} 筆 → 衛福部IT候選 {stats.saved}")
     print(f"決標落庫 {a_saved}（非衛福部略過 {a_skip_org}、黑名單略過 {a_skip_bl}）")
 
     fetch_log.close()
