@@ -26,6 +26,37 @@ _UA = (
 _GATE_RE = re.compile(r'id="url"[^>]*value="([^"]*)"')
 _GATE_MAX_RETRY = 3
 _GATE_WAIT_SECONDS = 3.0
+_ALLOWED_HOST = urllib.parse.urlparse(_BASE).hostname or ""
+
+
+def _require_pcc_url(url: str) -> str:
+    """只允許 https://web.pcc.gov.tw 的 URL 真正送出請求。
+
+    深度防禦(CWE-918 / CWE-22):
+      1. urllib.request.build_opener() 預設帶 FileHandler 與 FTPHandler,
+         因此 file:///etc/passwd、ftp://… 都是可達的 scheme;呼叫端一旦
+         把外部字串傳進來就變成本機檔案讀取。
+      2. 預設的 HTTPRedirectHandler 會跟隨 Location 到任意 http/https/ftp
+         主機 —— 上游 open redirect 或站台被入侵即可把請求導向
+         127.0.0.1 / 169.254.169.254。
+    呼叫端(fetcher)已對解析出的 href 做相對路徑檢查;本函式是網路邊界上
+    最後一道,同時覆蓋 redirect 目標。
+    """
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if parsed.scheme.lower() != "https" or host != _ALLOWED_HOST:
+        raise BlockedError(f"refusing outbound request outside {_BASE}: {url!r}")
+    if parsed.username is not None or parsed.password is not None:
+        raise BlockedError("refusing outbound request carrying URL credentials")
+    return url
+
+
+class _PinnedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """跟隨 redirect 前先驗證目標,阻止離開 web.pcc.gov.tw。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        _require_pcc_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def _is_gate(html: str) -> bool:
@@ -49,8 +80,11 @@ class CloudflareAwareHttpGetter:
         sleep=time.sleep,
         max_retry: int = _GATE_MAX_RETRY,
     ) -> None:
+        # build_opener 會以傳入的 handler 取代同類的預設 handler,
+        # 故 _PinnedRedirectHandler 會頂掉預設的 HTTPRedirectHandler。
         self._opener = opener or urllib.request.build_opener(
-            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
+            _PinnedRedirectHandler(),
         )
         self._sleep = sleep
         self._max_retry = max_retry
@@ -59,14 +93,16 @@ class CloudflareAwareHttpGetter:
     # 同步底層(urllib)
     # ------------------------------------------------------------------
     def _raw_get(self, url: str) -> str:
-        req = urllib.request.Request(url, headers={"User-Agent": _UA})
+        req = urllib.request.Request(
+            _require_pcc_url(url), headers={"User-Agent": _UA}
+        )
         with self._opener.open(req, timeout=40) as r:
             return r.read().decode("utf-8", "replace")
 
     def _raw_post(self, url: str, data: dict) -> str:
         body = urllib.parse.urlencode(data).encode()
         req = urllib.request.Request(
-            url,
+            _require_pcc_url(url),
             data=body,
             headers={
                 "User-Agent": _UA,
