@@ -17,6 +17,11 @@ import urllib.request
 
 from g0vmcp.contracts import BlockedError
 from g0vmcp.ingestion.http import Resp
+from g0vmcp.ingestion.url_guard import (
+    PccRedirectHandler,
+    assert_pcc_url,
+    safe_gate_path,
+)
 
 _BASE = "https://web.pcc.gov.tw"
 _UA = (
@@ -50,7 +55,8 @@ class CloudflareAwareHttpGetter:
         max_retry: int = _GATE_MAX_RETRY,
     ) -> None:
         self._opener = opener or urllib.request.build_opener(
-            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+            PccRedirectHandler(),
+            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
         )
         self._sleep = sleep
         self._max_retry = max_retry
@@ -59,14 +65,14 @@ class CloudflareAwareHttpGetter:
     # 同步底層(urllib)
     # ------------------------------------------------------------------
     def _raw_get(self, url: str) -> str:
-        req = urllib.request.Request(url, headers={"User-Agent": _UA})
+        req = urllib.request.Request(assert_pcc_url(url), headers={"User-Agent": _UA})
         with self._opener.open(req, timeout=40) as r:
             return r.read().decode("utf-8", "replace")
 
     def _raw_post(self, url: str, data: dict) -> str:
         body = urllib.parse.urlencode(data).encode()
         req = urllib.request.Request(
-            url,
+            assert_pcc_url(url),
             data=body,
             headers={
                 "User-Agent": _UA,
@@ -81,8 +87,8 @@ class CloudflareAwareHttpGetter:
         m = _GATE_RE.search(html)
         if not m:
             return False  # 找不到驗證 URL → 非速率封鎖,結構異常,不重試
-        path = _htmllib.unescape(m.group(1))
-        if not path.startswith("/") or "//" in path or "@" in path:
+        path = safe_gate_path(_htmllib.unescape(m.group(1)))
+        if path is None:
             return False
         self._sleep(_GATE_WAIT_SECONDS)  # 尊重速率限制的計時等候
         self._raw_get(_BASE + path)
