@@ -429,7 +429,8 @@ class TestGateUrlPathValidation:
         calls: list[str] = []
 
         class FakeResponse:
-            def read(self) -> bytes:
+            # 真實 http.client.HTTPResponse.read 接受 amt;_read_bounded 會帶上限呼叫
+            def read(self, amt: int | None = None) -> bytes:
                 return b"ok"
 
             def __enter__(self):
@@ -568,3 +569,77 @@ class TestDataDirPermissions:
         _resolve_db_path()
         data_dir = tmp_path / ".g0vmcp"
         assert data_dir.stat().st_mode & 0o777 == 0o700
+
+
+class TestBoundedResponseRead:
+    """Verify HTTP response bodies are size-capped before being read (CWE-400)."""
+
+    @staticmethod
+    def _getter():
+        from g0vmcp.ingestion.cf_http import CloudflareAwareHttpGetter
+
+        return CloudflareAwareHttpGetter(opener=object(), sleep=lambda _: None)
+
+    def test_oversized_body_rejected(self) -> None:
+        from g0vmcp.contracts import BlockedError
+        from g0vmcp.ingestion import cf_http
+
+        class HugeResponse:
+            def read(self, amt: int | None = None) -> bytes:
+                # 模擬上游回傳超過上限的 body:read(amt) 滿額回傳
+                assert amt is not None
+                return b"x" * amt
+
+        with pytest.raises(BlockedError, match="exceeds"):
+            cf_http._read_bounded(HugeResponse(), "https://web.pcc.gov.tw/x")
+
+    def test_body_at_limit_accepted(self) -> None:
+        from g0vmcp.ingestion import cf_http
+
+        class ExactResponse:
+            def read(self, amt: int | None = None) -> bytes:
+                return b"y" * cf_http._MAX_RESPONSE_BYTES
+
+        out = cf_http._read_bounded(ExactResponse(), "https://web.pcc.gov.tw/x")
+        assert len(out) == cf_http._MAX_RESPONSE_BYTES
+
+    def test_read_is_called_with_a_bound(self) -> None:
+        """回歸防護:read() 必須帶上限,無參數呼叫等於沒有護欄。"""
+        from g0vmcp.ingestion import cf_http
+
+        seen: list[int | None] = []
+
+        class RecordingResponse:
+            def read(self, amt: int | None = None) -> bytes:
+                seen.append(amt)
+                return b"ok"
+
+        cf_http._read_bounded(RecordingResponse(), "https://web.pcc.gov.tw/x")
+        assert seen == [cf_http._MAX_RESPONSE_BYTES + 1]
+
+    def test_raw_get_goes_through_the_bound(self) -> None:
+        """端到端:_raw_get 走 _read_bounded,超大回應不會被讀進記憶體。"""
+        from g0vmcp.contracts import BlockedError
+        from g0vmcp.ingestion.cf_http import CloudflareAwareHttpGetter, _MAX_RESPONSE_BYTES
+
+        class HugeResponse:
+            def read(self, amt: int | None = None) -> bytes:
+                assert amt is not None
+                return b"z" * amt
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args) -> None:
+                return None
+
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                return HugeResponse()
+
+        getter = CloudflareAwareHttpGetter(opener=FakeOpener(), sleep=lambda _: None)
+        with pytest.raises(BlockedError, match="exceeds"):
+            getter._raw_get("https://web.pcc.gov.tw/tps/tp/main/tps/tpam/tpam_tender_detail")
+        with pytest.raises(BlockedError, match="exceeds"):
+            getter._raw_post("https://web.pcc.gov.tw/tps/QueryTender/query/searchTenderDetail", {"a": "b"})
+        assert _MAX_RESPONSE_BYTES > 0
