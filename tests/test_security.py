@@ -103,6 +103,24 @@ class TestXmlEntityExpansion:
         with pytest.raises(ValueError):
             parse_award_xml(xml)
 
+    def test_entity_free_doctype_rejected(self) -> None:
+        """A DOCTYPE with no ENTITY decl must also be refused.
+
+        defusedxml defaults to forbid_dtd=False, so before the explicit
+        forbid_dtd=True this parsed happily even though the raised message
+        advertises "DTD ... not allowed". Entity-bearing DTDs were already
+        covered by the two tests above; this locks the entity-free case.
+        """
+        xml = (
+            '<?xml version="1.0"?>'
+            "<!DOCTYPE TENDER_LIST [<!ELEMENT TENDER_LIST ANY>]>"
+            "<TENDER_LIST></TENDER_LIST>"
+        )
+        with pytest.raises(ValueError, match="DTD"):
+            parse_tender_xml(xml)
+        with pytest.raises(ValueError, match="DTD"):
+            parse_award_xml(xml)
+
     def test_normal_xml_still_works(self) -> None:
         xml = (
             '<?xml version="1.0"?>'
