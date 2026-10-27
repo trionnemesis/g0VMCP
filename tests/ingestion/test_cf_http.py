@@ -7,6 +7,7 @@ from __future__ import annotations
 import pytest
 
 from g0vmcp.contracts import BlockedError
+from g0vmcp.ingestion import cf_http
 from g0vmcp.ingestion.cf_http import CloudflareAwareHttpGetter
 
 from .conftest import load_fixture
@@ -82,3 +83,78 @@ async def test_satisfies_http_getter_protocol() -> None:
 
     getter = CloudflareAwareHttpGetter(sleep=lambda _s: None)
     assert isinstance(getter, HttpGetter)
+
+
+# ── 回應大小上限(CWE-400 資源耗用護欄)──────────────────────────────────────
+
+
+class _FakeBody:
+    """最小 urllib 回應替身:只實作 context manager + read(n)。"""
+
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+        self.read_sizes: list[int | None] = []
+
+    def __enter__(self) -> "_FakeBody":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+    def read(self, n: int | None = None) -> bytes:
+        self.read_sizes.append(n)
+        return self._payload if n is None else self._payload[:n]
+
+
+class _FakeOpener:
+    def __init__(self, body: _FakeBody) -> None:
+        self._body = body
+
+    def open(self, _req: object, timeout: int | None = None) -> _FakeBody:
+        return self._body
+
+
+def _getter_with_body(payload: bytes) -> tuple[CloudflareAwareHttpGetter, _FakeBody]:
+    body = _FakeBody(payload)
+    getter = CloudflareAwareHttpGetter(
+        opener=_FakeOpener(body), sleep=lambda _s: None
+    )
+    return getter, body
+
+
+async def test_oversized_response_is_aborted() -> None:
+    """超過上限的回應不得被整份讀入,必須拋 BlockedError。"""
+    getter, _ = _getter_with_body(b"x" * (cf_http.MAX_RESPONSE_BYTES + 10))
+
+    with pytest.raises(BlockedError, match="exceeds"):
+        await getter("https://web.pcc.gov.tw/detail")
+
+
+async def test_read_is_bounded_not_unlimited() -> None:
+    """read() 必須帶上限引數 — 絕不呼叫無上限的 read()。"""
+    getter, body = _getter_with_body(b"<html>ok</html>")
+
+    await getter("https://web.pcc.gov.tw/detail")
+
+    assert body.read_sizes == [cf_http.MAX_RESPONSE_BYTES + 1]
+    assert None not in body.read_sizes
+
+
+async def test_normal_sized_page_is_unaffected() -> None:
+    """上限遠高於真實頁面 — 正常頁行為不變(回歸保護)。"""
+    getter, _ = _getter_with_body(
+        load_fixture("live_tender_detail.html").encode("utf-8")
+    )
+
+    resp = await getter("https://web.pcc.gov.tw/detail")
+
+    assert resp.status_code == 200
+    assert "昆陽大樓整建工程" in resp.text
+
+
+async def test_post_read_is_also_bounded() -> None:
+    """POST 路徑共用同一上限(兩處 raw 方法都不得無上限讀取)。"""
+    getter, _ = _getter_with_body(b"y" * (cf_http.MAX_RESPONSE_BYTES + 1))
+
+    with pytest.raises(BlockedError, match="exceeds"):
+        await getter.post("https://web.pcc.gov.tw/search", {"tenderId": "x"})

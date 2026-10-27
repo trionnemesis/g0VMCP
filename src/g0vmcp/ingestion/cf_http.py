@@ -26,6 +26,10 @@ _UA = (
 _GATE_RE = re.compile(r'id="url"[^>]*value="([^"]*)"')
 _GATE_MAX_RETRY = 3
 _GATE_WAIT_SECONDS = 3.0
+# 單次回應讀取上限。真實明細頁約 140KB、半月 open data 頁更小;8MB 遠高於任何
+# 正常頁面,故對既有行為無影響。無上限時 `r.read()` 會把上游回應(或被導向的
+# 任意大檔)整份讀進記憶體,單一請求即可造成資源耗用(CWE-400)。
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
 def _is_gate(html: str) -> bool:
@@ -58,10 +62,22 @@ class CloudflareAwareHttpGetter:
     # ------------------------------------------------------------------
     # 同步底層(urllib)
     # ------------------------------------------------------------------
+    def _read_capped(self, r, url: str) -> str:
+        """讀取回應但不超過 MAX_RESPONSE_BYTES;超量即中止並拋 BlockedError。
+
+        多讀 1 byte 以區分「正好等於上限」與「超過上限」。
+        """
+        raw = r.read(MAX_RESPONSE_BYTES + 1)
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise BlockedError(
+                f"response exceeds {MAX_RESPONSE_BYTES} bytes, aborted: {url}"
+            )
+        return raw.decode("utf-8", "replace")
+
     def _raw_get(self, url: str) -> str:
         req = urllib.request.Request(url, headers={"User-Agent": _UA})
         with self._opener.open(req, timeout=40) as r:
-            return r.read().decode("utf-8", "replace")
+            return self._read_capped(r, url)
 
     def _raw_post(self, url: str, data: dict) -> str:
         body = urllib.parse.urlencode(data).encode()
@@ -74,7 +90,7 @@ class CloudflareAwareHttpGetter:
             },
         )
         with self._opener.open(req, timeout=40) as r:
-            return r.read().decode("utf-8", "replace")
+            return self._read_capped(r, url)
 
     def _pass_gate(self, html: str) -> bool:
         """偵測閘門 → 等候後請求 validate/check 取驗證 cookie。回是否已嘗試通過。"""
