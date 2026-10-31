@@ -26,6 +26,50 @@ _UA = (
 _GATE_RE = re.compile(r'id="url"[^>]*value="([^"]*)"')
 _GATE_MAX_RETRY = 3
 _GATE_WAIT_SECONDS = 3.0
+# 單次回應讀取上限(含轉址中間回應)。既有明細 fixture 小於 8 MiB;
+# 正式來源的所有頁面大小並未逐一驗證。無上限讀取可造成資源耗用(CWE-400)。
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+
+
+def _read_capped_bytes(response, url: str, amt: int | None = None) -> bytes:
+    limit = MAX_RESPONSE_BYTES + 1
+    if amt is not None and amt >= 0:
+        limit = min(amt, limit)
+    raw = response.read(limit)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        response.close()
+        raise BlockedError(
+            f"response exceeds {MAX_RESPONSE_BYTES} bytes, aborted: {url}"
+        )
+    return raw
+
+
+class _BoundedRedirectResponse:
+    """保留回應介面,只限制 urllib 跟隨轉址前的 body drain。"""
+
+    def __init__(self, response, url: str) -> None:
+        self._response = response
+        self._url = url
+
+    def __getattr__(self, name):
+        return getattr(self._response, name)
+
+    def read(self, amt: int | None = None) -> bytes:
+        return _read_capped_bytes(self._response, self._url, amt)
+
+
+class _BoundedRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """沿用 urllib 的轉址目的地、方法、cookie 與迴圈政策,限制中間回應。"""
+
+    def http_error_302(self, req, fp, code, msg, headers):
+        return super().http_error_302(
+            req, _BoundedRedirectResponse(fp, req.full_url), code, msg, headers
+        )
+
+    http_error_301 = http_error_302
+    http_error_303 = http_error_302
+    http_error_307 = http_error_302
+    http_error_308 = http_error_302
 
 
 def _is_gate(html: str) -> bool:
@@ -50,7 +94,8 @@ class CloudflareAwareHttpGetter:
         max_retry: int = _GATE_MAX_RETRY,
     ) -> None:
         self._opener = opener or urllib.request.build_opener(
-            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
+            _BoundedRedirectHandler(),
         )
         self._sleep = sleep
         self._max_retry = max_retry
@@ -58,10 +103,17 @@ class CloudflareAwareHttpGetter:
     # ------------------------------------------------------------------
     # 同步底層(urllib)
     # ------------------------------------------------------------------
+    def _read_capped(self, r, url: str) -> str:
+        """讀取回應但不超過 MAX_RESPONSE_BYTES;超量即中止並拋 BlockedError。
+
+        多讀 1 byte 以區分「正好等於上限」與「超過上限」。
+        """
+        return _read_capped_bytes(r, url).decode("utf-8", "replace")
+
     def _raw_get(self, url: str) -> str:
         req = urllib.request.Request(url, headers={"User-Agent": _UA})
         with self._opener.open(req, timeout=40) as r:
-            return r.read().decode("utf-8", "replace")
+            return self._read_capped(r, url)
 
     def _raw_post(self, url: str, data: dict) -> str:
         body = urllib.parse.urlencode(data).encode()
@@ -74,7 +126,7 @@ class CloudflareAwareHttpGetter:
             },
         )
         with self._opener.open(req, timeout=40) as r:
-            return r.read().decode("utf-8", "replace")
+            return self._read_capped(r, url)
 
     def _pass_gate(self, html: str) -> bool:
         """偵測閘門 → 等候後請求 validate/check 取驗證 cookie。回是否已嘗試通過。"""

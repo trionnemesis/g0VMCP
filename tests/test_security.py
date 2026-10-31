@@ -429,7 +429,8 @@ class TestGateUrlPathValidation:
         calls: list[str] = []
 
         class FakeResponse:
-            def read(self) -> bytes:
+            # 真實 urllib 回應支援 read(amt);cf_http 以上限讀取,故替身比照
+            def read(self, amt: int | None = None) -> bytes:
                 return b"ok"
 
             def __enter__(self):
