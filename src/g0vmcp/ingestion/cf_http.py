@@ -36,14 +36,32 @@ _UA = (
 _GATE_RE = re.compile(r'id="url"[^>]*value="([^"]*)"')
 _GATE_MAX_RETRY = 3
 _GATE_WAIT_SECONDS = 3.0
-_ALLOWED_HOST = urllib.parse.urlparse(_BASE).hostname or ""
 # 單次回應讀取上限(含轉址中間回應)。既有明細 fixture 小於 8 MiB;
 # 正式來源的所有頁面大小並未逐一驗證。無上限讀取可造成資源耗用(CWE-400)。
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    """(scheme, host, port) —— port 為 None 時補上該 scheme 的預設埠。
+
+    正規化後才比得出 `https://web.pcc.gov.tw` 與 `https://web.pcc.gov.tw:443`
+    是同一個 origin;host 比對不分大小寫,並去掉 FQDN 尾綴點。
+    """
+    parsed = urllib.parse.urlparse(url)
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower().rstrip(".")
+    try:
+        port = parsed.port
+    except ValueError as exc:  # 埠號非數字 → 視為不合法 URL
+        raise BlockedError(f"refusing outbound request with bad port: {url!r}") from exc
+    return scheme, host, port if port is not None else _DEFAULT_PORTS.get(scheme)
+
+
 def _require_pcc_url(url: str) -> str:
-    """只允許 https://web.pcc.gov.tw 的 URL 真正送出請求。
+    """只允許與 _BASE 同一個 origin 的 URL 真正送出請求。
 
     深度防禦(CWE-918 / CWE-22):
       1. urllib.request.build_opener() 預設帶 FileHandler 與 FTPHandler,
@@ -54,11 +72,19 @@ def _require_pcc_url(url: str) -> str:
          127.0.0.1 / 169.254.169.254。
     呼叫端(fetcher)已對解析出的 href 做相對路徑檢查;本函式是網路邊界上
     最後一道,同時覆蓋 redirect 目標。
+
+    允許的 origin 在「呼叫時」由 _BASE 推導,而不是 import 時算好存成常數:
+    兩者在正式環境完全等價(_BASE 是常數,仍然只有 https://web.pcc.gov.tw
+    過關),但 import 時算好的衍生常數會與被 monkeypatch 的 _BASE 不同步 ——
+    既有的轉址測試以本機 HTTP server 驅動真實 urllib 行為,正是靠
+    `monkeypatch.setattr(cf_http, "_BASE", ...)` 改寫基底。衍生常數會讓那組
+    測試改成測不到真實轉址路徑,等於為了設定方便而犧牲測試強度。
     """
-    parsed = urllib.parse.urlparse(url)
-    host = (parsed.hostname or "").lower().rstrip(".")
-    if parsed.scheme.lower() != "https" or host != _ALLOWED_HOST:
+    want_scheme, want_host, want_port = _origin(_BASE)
+    scheme, host, port = _origin(url)
+    if (scheme, host, port) != (want_scheme, want_host, want_port):
         raise BlockedError(f"refusing outbound request outside {_BASE}: {url!r}")
+    parsed = urllib.parse.urlparse(url)
     if parsed.username is not None or parsed.password is not None:
         raise BlockedError("refusing outbound request carrying URL credentials")
     return url
