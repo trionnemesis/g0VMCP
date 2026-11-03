@@ -764,3 +764,91 @@ class TestSafeRelativePathHelper:
         from g0vmcp.ingestion.cf_http import is_safe_relative_path
 
         assert is_safe_relative_path(path) is False
+
+
+class TestEnrichScriptIsOriginPinned:
+    """腳本的出站請求與 cf_http 共用同一道 origin 檢查(PR #23 的護欄)。
+
+    腳本原本自建 opener,所以 PR #23 對 cf_http 的釘選管不到它 ——
+    build_opener 的預設 FileHandler/FTPHandler 也還在。
+    """
+
+    @staticmethod
+    def _script():
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        import enrich_open_date
+
+        return enrich_open_date
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "file:///etc/passwd",
+            "ftp://web.pcc.gov.tw/x",
+            "http://web.pcc.gov.tw/x",          # 降級明文
+            "https://169.254.169.254/latest/meta-data/",
+            "https://attacker.example/x",
+            "https://web.pcc.gov.tw.attacker.example/x",
+            "https://user:pw@web.pcc.gov.tw/x",
+        ],
+    )
+    def test_offsite_url_is_refused_before_any_connection(self, url: str) -> None:
+        from g0vmcp.contracts import BlockedError
+
+        script = self._script()
+
+        class ExplodingOpener:
+            def open(self, *a, **kw):
+                raise AssertionError("opener must not be reached for a refused URL")
+
+        with mock.patch.object(script, "_OPENER", ExplodingOpener()):
+            with pytest.raises(BlockedError):
+                script._raw_get(url)
+            with pytest.raises(BlockedError):
+                script._http_post(url, {"a": "b"})
+
+    def test_legitimate_pcc_url_still_requested(self) -> None:
+        script = self._script()
+        seen: list[str] = []
+
+        class FakeResponse:
+            def read(self, amt=None) -> bytes:
+                return b"<html>\xe9\x96\x8b\xe6\xa8\x99\xe6\x99\x82\xe9\x96\x93</html>"
+
+            def close(self) -> None:
+                return None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a) -> None:
+                return None
+
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                seen.append(req.full_url)
+                return FakeResponse()
+
+        with mock.patch.object(script, "_OPENER", FakeOpener()):
+            out = script._raw_get("https://web.pcc.gov.tw/tps/tpam/detail?pk=1")
+        assert seen == ["https://web.pcc.gov.tw/tps/tpam/detail?pk=1"]
+        assert "開標時間" in out
+
+    def test_opener_has_no_file_or_ftp_handler(self) -> None:
+        """build_opener 預設會帶 FileHandler/FTPHandler —— 不該留在出站 opener 上。"""
+        import urllib.request
+
+        from g0vmcp.ingestion.cf_http import PinnedBoundedRedirectHandler
+
+        handlers = self._script()._OPENER.handlers
+        assert any(isinstance(h, PinnedBoundedRedirectHandler) for h in handlers)
+        plain = [
+            h
+            for h in handlers
+            if isinstance(h, urllib.request.HTTPRedirectHandler)
+            and not isinstance(h, PinnedBoundedRedirectHandler)
+        ]
+        assert plain == []

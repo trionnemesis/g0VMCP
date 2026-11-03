@@ -33,7 +33,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from g0vmcp.contracts import Money
 from g0vmcp.ingestion.cf_http import (
-    BoundedRedirectHandler,
+    PinnedBoundedRedirectHandler,
+    require_pcc_url,
     is_safe_relative_path,
     read_capped_bytes,
 )
@@ -94,8 +95,9 @@ def _parse_int(text: str) -> Optional[int]:
 # 通過後設驗證 cookie;沿用同一 opener 才能保留。
 _OPENER = urllib.request.build_opener(
     urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
-    # 轉址的中間回應同樣受讀取上限約束(與 cf_http 同一個 handler)
-    BoundedRedirectHandler(),
+    # 與 cf_http 同一個 handler:驗證轉址目標 + 限制中間回應讀取量。
+    # 這也順便移掉 build_opener 預設帶的 FileHandler / FTPHandler。
+    PinnedBoundedRedirectHandler(),
 )
 _GATE_RE = re.compile(r'id="url"[^>]*value="([^"]*)"')
 _GATE_MAX_RETRY = 3
@@ -112,7 +114,9 @@ def _read(r, url: str) -> str:
 
 
 def _raw_get(url: str) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": _UA})
+    req = urllib.request.Request(
+        require_pcc_url(url), headers={"User-Agent": _UA}
+    )
     with _OPENER.open(req, timeout=40) as r:
         return _read(r, url)
 
@@ -153,7 +157,7 @@ def _http_get(url: str) -> str:
 def _http_post(url: str, data: dict) -> str:
     body = urllib.parse.urlencode(data).encode()
     req = urllib.request.Request(
-        url,
+        require_pcc_url(url),
         data=body,
         headers={"User-Agent": _UA, "Content-Type": "application/x-www-form-urlencoded"},
     )

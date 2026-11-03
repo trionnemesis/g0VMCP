@@ -162,6 +162,8 @@ BoundedRedirectHandler = PinnedBoundedRedirectHandler
 _BoundedRedirectHandler = PinnedBoundedRedirectHandler
 _PinnedRedirectHandler = PinnedBoundedRedirectHandler
 _read_capped_bytes = read_capped_bytes
+# 公開名稱:scripts/ 共用同一道 origin 檢查,不另寫一份
+require_pcc_url = _require_pcc_url
 
 
 def _is_gate(html: str) -> bool:
