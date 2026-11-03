@@ -223,8 +223,15 @@ def local_http(monkeypatch):
         target=lambda: server.serve_forever(poll_interval=0.01), daemon=True
     )
     thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    # cf_http 的出站邊界只放行與 _BASE 同一個 origin 的請求
+    # (_require_pcc_url,來自 PR #23 的 host 釘選)。本組測試的主題是「真實
+    # urllib 轉址行為 + 讀取上限」,必須有一台真的 server 才測得到,因此把
+    # _BASE 指向這台本機 server —— 不是放寬護欄,而是把護欄的基底換成受測基底;
+    # host 釘選本身由 test_cf_http_boundary.py 專門驗證。
+    monkeypatch.setattr(cf_http, "_BASE", base)
     try:
-        yield f"http://127.0.0.1:{server.server_port}", routes, calls, reads
+        yield base, routes, calls, reads
     finally:
         server.shutdown()
         server.server_close()

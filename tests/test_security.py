@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 from typing import Optional, Sequence
+from unittest import mock
 
 import pytest
 
@@ -101,6 +102,24 @@ class TestXmlEntityExpansion:
             "<TENDER_LIST>&xxe;</TENDER_LIST>"
         )
         with pytest.raises(ValueError):
+            parse_award_xml(xml)
+
+    def test_entity_free_doctype_rejected(self) -> None:
+        """A DOCTYPE with no ENTITY decl must also be refused.
+
+        defusedxml defaults to forbid_dtd=False, so before the explicit
+        forbid_dtd=True this parsed happily even though the raised message
+        advertises "DTD ... not allowed". Entity-bearing DTDs were already
+        covered by the two tests above; this locks the entity-free case.
+        """
+        xml = (
+            '<?xml version="1.0"?>'
+            "<!DOCTYPE TENDER_LIST [<!ELEMENT TENDER_LIST ANY>]>"
+            "<TENDER_LIST></TENDER_LIST>"
+        )
+        with pytest.raises(ValueError, match="DTD"):
+            parse_tender_xml(xml)
+        with pytest.raises(ValueError, match="DTD"):
             parse_award_xml(xml)
 
     def test_normal_xml_still_works(self) -> None:
@@ -569,3 +588,267 @@ class TestDataDirPermissions:
         _resolve_db_path()
         data_dir = tmp_path / ".g0vmcp"
         assert data_dir.stat().st_mode & 0o777 == 0o700
+
+
+class TestEnrichScriptOutboundGuards:
+    """scripts/enrich_open_date.py 的出站護欄 —— 與 src/ 同一組判斷。
+
+    這支維運腳本是 cf_http/fetcher 的前身,先前沒跟上兩項已修正的護欄:
+    上游 href / 閘門路徑未驗證(CWE-918)、回應讀取無上限(CWE-400)。
+    """
+
+    @staticmethod
+    def _script():
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        import enrich_open_date
+
+        return enrich_open_date
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "https://evil.com/steal",
+            "//evil.com/tps/validate/check",
+            "/tps/validate/check@evil.com",
+        ],
+    )
+    def test_suspicious_gate_path_is_not_requested(self, path: str) -> None:
+        script = self._script()
+        calls: list[str] = []
+
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                calls.append(req.full_url)
+                raise AssertionError("suspicious gate path must not be requested")
+
+        with mock.patch.object(script, "_OPENER", FakeOpener()):
+            assert script._pass_gate(f'<input id="url" value="{path}"/>') is False
+        assert calls == []
+
+    def test_valid_gate_path_is_still_requested(self) -> None:
+        """護欄不得把正常流程擋掉。"""
+        script = self._script()
+        calls: list[str] = []
+
+        class FakeResponse:
+            def read(self, amt=None) -> bytes:
+                return b"ok"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args) -> None:
+                return None
+
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                calls.append(req.full_url)
+                return FakeResponse()
+
+        with mock.patch.object(script, "_OPENER", FakeOpener()), mock.patch.object(
+            script.time, "sleep", lambda _: None
+        ):
+            html = '<input id="url" value="/tps/validate/check?token=abc"/>'
+            assert script._pass_gate(html) is True
+        assert any("/tps/validate/check?token=abc" in c for c in calls)
+
+    def test_offsite_tpam_href_is_skipped(self) -> None:
+        """`@` 會把 host 換掉:https://web.pcc.gov.tw@evil.com/x 指向 evil.com。"""
+        script = self._script()
+        requested: list[str] = []
+
+        def fake_post(url, data):
+            return (
+                "<table><tr><td>招標公告</td><td>ABC-1</td>"
+                '<td><a href="@evil.com/tpam/x">明細</a></td></tr></table>'
+            )
+
+        with mock.patch.object(script, "_http_post", fake_post), mock.patch.object(
+            script, "_http_get", lambda u: requested.append(u) or ""
+        ):
+            assert script.fetch_open_date("ABC-1") is None
+        assert requested == []
+
+    def test_relative_tpam_href_is_still_fetched(self) -> None:
+        script = self._script()
+        requested: list[str] = []
+
+        def fake_post(url, data):
+            return (
+                "<table><tr><td>招標公告</td><td>ABC-1</td>"
+                '<td><a href="/tps/tpam/detail?pk=1">明細</a></td></tr></table>'
+            )
+
+        def fake_get(url):
+            requested.append(url)
+            return "<table><tr><td>開標時間</td><td>114/01/20 14:30</td></tr></table>"
+
+        with mock.patch.object(script, "_http_post", fake_post), mock.patch.object(
+            script, "_http_get", fake_get
+        ):
+            fields = script.fetch_open_date("ABC-1")
+        assert requested == ["https://web.pcc.gov.tw/tps/tpam/detail?pk=1"]
+        assert fields is not None and fields["open_date"] is not None
+
+    def test_response_read_is_capped(self) -> None:
+        from g0vmcp.contracts import BlockedError
+        from g0vmcp.ingestion import cf_http
+
+        script = self._script()
+
+        class Body:
+            def __init__(self) -> None:
+                self.read_sizes: list[int | None] = []
+
+            def read(self, amt=None) -> bytes:
+                self.read_sizes.append(amt)
+                return b"x" * (cf_http.MAX_RESPONSE_BYTES + 1)
+
+            def close(self) -> None:
+                return None
+
+        body = Body()
+        with pytest.raises(BlockedError):
+            script._read(body, "https://web.pcc.gov.tw/tps/x")
+        # 以上限+1 讀取:區分「正好等於上限」與「超過上限」,不是讀完才檢查
+        assert body.read_sizes == [cf_http.MAX_RESPONSE_BYTES + 1]
+
+    def test_normal_response_read_is_unchanged(self) -> None:
+        script = self._script()
+
+        class Body:
+            def read(self, amt=None) -> bytes:
+                return "開標時間".encode()
+
+            def close(self) -> None:
+                return None
+
+        assert script._read(Body(), "https://web.pcc.gov.tw/tps/x") == "開標時間"
+
+    def test_opener_limits_redirect_bodies(self) -> None:
+        from g0vmcp.ingestion.cf_http import BoundedRedirectHandler
+
+        script = self._script()
+        assert any(
+            isinstance(h, BoundedRedirectHandler) for h in script._OPENER.handlers
+        )
+
+
+class TestSafeRelativePathHelper:
+    """is_safe_relative_path 是 src/ 與 scripts/ 共用的單一判斷。"""
+
+    @pytest.mark.parametrize(
+        "path", ["/tps/x", "/tps/validate/check?token=abc", "/a/b/c"]
+    )
+    def test_relative_paths_allowed(self, path: str) -> None:
+        from g0vmcp.ingestion.cf_http import is_safe_relative_path
+
+        assert is_safe_relative_path(path) is True
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "https://evil.com/x",
+            "//evil.com/x",
+            "@evil.com/x",
+            "/ok@evil.com",
+            "/ok//evil.com",
+            "tps/x",
+            "",
+        ],
+    )
+    def test_unsafe_paths_rejected(self, path: str) -> None:
+        from g0vmcp.ingestion.cf_http import is_safe_relative_path
+
+        assert is_safe_relative_path(path) is False
+
+
+class TestEnrichScriptIsOriginPinned:
+    """腳本的出站請求與 cf_http 共用同一道 origin 檢查(PR #23 的護欄)。
+
+    腳本原本自建 opener,所以 PR #23 對 cf_http 的釘選管不到它 ——
+    build_opener 的預設 FileHandler/FTPHandler 也還在。
+    """
+
+    @staticmethod
+    def _script():
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+        import enrich_open_date
+
+        return enrich_open_date
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "file:///etc/passwd",
+            "ftp://web.pcc.gov.tw/x",
+            "http://web.pcc.gov.tw/x",          # 降級明文
+            "https://169.254.169.254/latest/meta-data/",
+            "https://attacker.example/x",
+            "https://web.pcc.gov.tw.attacker.example/x",
+            "https://user:pw@web.pcc.gov.tw/x",
+        ],
+    )
+    def test_offsite_url_is_refused_before_any_connection(self, url: str) -> None:
+        from g0vmcp.contracts import BlockedError
+
+        script = self._script()
+
+        class ExplodingOpener:
+            def open(self, *a, **kw):
+                raise AssertionError("opener must not be reached for a refused URL")
+
+        with mock.patch.object(script, "_OPENER", ExplodingOpener()):
+            with pytest.raises(BlockedError):
+                script._raw_get(url)
+            with pytest.raises(BlockedError):
+                script._http_post(url, {"a": "b"})
+
+    def test_legitimate_pcc_url_still_requested(self) -> None:
+        script = self._script()
+        seen: list[str] = []
+
+        class FakeResponse:
+            def read(self, amt=None) -> bytes:
+                return b"<html>\xe9\x96\x8b\xe6\xa8\x99\xe6\x99\x82\xe9\x96\x93</html>"
+
+            def close(self) -> None:
+                return None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a) -> None:
+                return None
+
+        class FakeOpener:
+            def open(self, req, timeout=None):
+                seen.append(req.full_url)
+                return FakeResponse()
+
+        with mock.patch.object(script, "_OPENER", FakeOpener()):
+            out = script._raw_get("https://web.pcc.gov.tw/tps/tpam/detail?pk=1")
+        assert seen == ["https://web.pcc.gov.tw/tps/tpam/detail?pk=1"]
+        assert "開標時間" in out
+
+    def test_opener_has_no_file_or_ftp_handler(self) -> None:
+        """build_opener 預設會帶 FileHandler/FTPHandler —— 不該留在出站 opener 上。"""
+        import urllib.request
+
+        from g0vmcp.ingestion.cf_http import PinnedBoundedRedirectHandler
+
+        handlers = self._script()._OPENER.handlers
+        assert any(isinstance(h, PinnedBoundedRedirectHandler) for h in handlers)
+        plain = [
+            h
+            for h in handlers
+            if isinstance(h, urllib.request.HTTPRedirectHandler)
+            and not isinstance(h, PinnedBoundedRedirectHandler)
+        ]
+        assert plain == []

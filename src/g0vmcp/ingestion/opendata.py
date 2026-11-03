@@ -16,11 +16,19 @@ _MAX_XML_LEN = 100 * 1024 * 1024  # 100 MiB hard cap
 
 
 def _safe_fromstring(xml: str) -> ET.Element:
-    """Size-guard + defusedxml; raises ValueError on oversized or forbidden XML (CWE-611/776)."""
+    """Size-guard + defusedxml; raises ValueError on oversized or forbidden XML (CWE-611/776).
+
+    forbid_dtd=True is explicit: defusedxml only defaults to forbidding *entity*
+    declarations, so without it a `<!DOCTYPE ...>` prolog is still parsed and this
+    function would not reject what its own error message claims it does. The PCC
+    half-month feed carries no DOCTYPE (see tests/ingestion/fixtures/*.xml), and the
+    vendored copy of this parser in healthcare-opendata-mcp already runs with
+    forbid_dtd=True against the same upstream files.
+    """
     if len(xml) > _MAX_XML_LEN:
         raise ValueError(f"XML too large: {len(xml)} bytes (limit {_MAX_XML_LEN})")
     try:
-        return ET.fromstring(xml)
+        return ET.fromstring(xml, forbid_dtd=True)
     except defusedxml.DefusedXmlException as exc:
         raise ValueError("XML rejected: DTD or external entities not allowed") from exc
 
