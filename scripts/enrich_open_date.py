@@ -32,6 +32,11 @@ from selectolax.parser import HTMLParser
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from g0vmcp.contracts import Money
+from g0vmcp.ingestion.cf_http import (
+    BoundedRedirectHandler,
+    is_safe_relative_path,
+    read_capped_bytes,
+)
 from g0vmcp.ingestion.fetcher import _parse_money, _parse_roc_datetime
 from g0vmcp.repository import build_repositories
 
@@ -88,16 +93,28 @@ def _parse_int(text: str) -> Optional[int]:
 # 共用 cookie jar:PCC 對密集請求會回計時閘門頁(/tps/validate),
 # 通過後設驗證 cookie;沿用同一 opener 才能保留。
 _OPENER = urllib.request.build_opener(
-    urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())
+    urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
+    # 轉址的中間回應同樣受讀取上限約束(與 cf_http 同一個 handler)
+    BoundedRedirectHandler(),
 )
 _GATE_RE = re.compile(r'id="url"[^>]*value="([^"]*)"')
 _GATE_MAX_RETRY = 3
 
 
+def _read(r, url: str) -> str:
+    """受 cf_http.MAX_RESPONSE_BYTES 約束的讀取。
+
+    `r.read()` 無上限:上游回(或把我們導向)一個大檔時,單一標案的補爬
+    就能吃掉整個行程的記憶體(CWE-400)。同一份邏輯在
+    ingestion/cf_http.py 已經有上限,這支維運腳本先前沒跟上。
+    """
+    return read_capped_bytes(r, url).decode("utf-8", "replace")
+
+
 def _raw_get(url: str) -> str:
     req = urllib.request.Request(url, headers={"User-Agent": _UA})
     with _OPENER.open(req, timeout=40) as r:
-        return r.read().decode("utf-8", "replace")
+        return _read(r, url)
 
 
 def _is_gate(html: str) -> bool:
@@ -109,8 +126,14 @@ def _pass_gate(html: str) -> bool:
     m = _GATE_RE.search(html)
     if not m:
         return False
+    path = _htmllib.unescape(m.group(1))
+    if not is_safe_relative_path(path):
+        # 閘門頁的驗證 URL 來自上游 HTML。`@` / `//` 會換掉 host
+        # (https://web.pcc.gov.tw@evil.com/x 的 host 是 evil.com),
+        # 等於讓上游決定請求目標(CWE-918)。cf_http 已有同一道檢查。
+        return False
     time.sleep(3)  # 尊重速率限制的計時等候
-    _raw_get(_BASE + _htmllib.unescape(m.group(1)))
+    _raw_get(_BASE + path)
     return True
 
 
@@ -135,14 +158,14 @@ def _http_post(url: str, data: dict) -> str:
         headers={"User-Agent": _UA, "Content-Type": "application/x-www-form-urlencoded"},
     )
     with _OPENER.open(req, timeout=40) as r:
-        html = r.read().decode("utf-8", "replace")
+        html = _read(r, url)
     for _ in range(_GATE_MAX_RETRY):
         if not _is_gate(html):
             return html
         if not _pass_gate(html):
             break
         with _OPENER.open(req, timeout=40) as r:
-            html = r.read().decode("utf-8", "replace")
+            html = _read(r, url)
     return html
 
 
@@ -172,6 +195,10 @@ def fetch_open_date(job_number: str) -> Optional[dict]:
         link = row.css_first("a[href*=tpam]")
         href = link.attributes.get("href") if link else None
         if not href:
+            continue
+        if not is_safe_relative_path(href):
+            # 搜尋結果頁的 href 是不可信輸入;fetcher.py 已有同一道檢查,
+            # 這支腳本先前直接把它接在 _BASE 後面就送出去(CWE-918)。
             continue
         fields = extract_open_fields(_http_get(f"{_BASE}{href}"))
         if fields["open_date"] is not None:

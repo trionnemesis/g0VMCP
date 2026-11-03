@@ -31,7 +31,21 @@ _GATE_WAIT_SECONDS = 3.0
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
-def _read_capped_bytes(response, url: str, amt: int | None = None) -> bytes:
+def is_safe_relative_path(path: str) -> bool:
+    """上游 HTML 給的路徑是否能安全地接在 _BASE 後面。
+
+    不是潔癖檢查:`@` 會讓 `https://web.pcc.gov.tw` 變成 userinfo,
+    `https://web.pcc.gov.tw@evil.com/x` 的實際 host 是 evil.com
+    —— 一個上游 href 就能把請求帶離站外(CWE-918 SSRF / CWE-601)。
+    `//` 開頭則是 protocol-relative,同樣換掉 host。
+
+    公開給 scripts/ 共用:同樣的判斷先前在 fetcher 與本模組各寫一份,
+    維運腳本漏掉,正是這次要消掉的重複。
+    """
+    return path.startswith("/") and "//" not in path and "@" not in path
+
+
+def read_capped_bytes(response, url: str, amt: int | None = None) -> bytes:
     limit = MAX_RESPONSE_BYTES + 1
     if amt is not None and amt >= 0:
         limit = min(amt, limit)
@@ -55,10 +69,10 @@ class _BoundedRedirectResponse:
         return getattr(self._response, name)
 
     def read(self, amt: int | None = None) -> bytes:
-        return _read_capped_bytes(self._response, self._url, amt)
+        return read_capped_bytes(self._response, self._url, amt)
 
 
-class _BoundedRedirectHandler(urllib.request.HTTPRedirectHandler):
+class BoundedRedirectHandler(urllib.request.HTTPRedirectHandler):
     """沿用 urllib 的轉址目的地、方法、cookie 與迴圈政策,限制中間回應。"""
 
     def http_error_302(self, req, fp, code, msg, headers):
@@ -70,6 +84,11 @@ class _BoundedRedirectHandler(urllib.request.HTTPRedirectHandler):
     http_error_303 = http_error_302
     http_error_307 = http_error_302
     http_error_308 = http_error_302
+
+
+# 舊私有名稱保留為別名:外部已有引用,改名不應是破壞性變更。
+_BoundedRedirectHandler = BoundedRedirectHandler
+_read_capped_bytes = read_capped_bytes
 
 
 def _is_gate(html: str) -> bool:
@@ -95,7 +114,7 @@ class CloudflareAwareHttpGetter:
     ) -> None:
         self._opener = opener or urllib.request.build_opener(
             urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()),
-            _BoundedRedirectHandler(),
+            BoundedRedirectHandler(),
         )
         self._sleep = sleep
         self._max_retry = max_retry
@@ -108,7 +127,7 @@ class CloudflareAwareHttpGetter:
 
         多讀 1 byte 以區分「正好等於上限」與「超過上限」。
         """
-        return _read_capped_bytes(r, url).decode("utf-8", "replace")
+        return read_capped_bytes(r, url).decode("utf-8", "replace")
 
     def _raw_get(self, url: str) -> str:
         req = urllib.request.Request(url, headers={"User-Agent": _UA})
@@ -134,7 +153,7 @@ class CloudflareAwareHttpGetter:
         if not m:
             return False  # 找不到驗證 URL → 非速率封鎖,結構異常,不重試
         path = _htmllib.unescape(m.group(1))
-        if not path.startswith("/") or "//" in path or "@" in path:
+        if not is_safe_relative_path(path):
             return False
         self._sleep(_GATE_WAIT_SECONDS)  # 尊重速率限制的計時等候
         self._raw_get(_BASE + path)
