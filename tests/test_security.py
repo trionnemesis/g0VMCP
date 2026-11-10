@@ -569,3 +569,54 @@ class TestDataDirPermissions:
         _resolve_db_path()
         data_dir = tmp_path / ".g0vmcp"
         assert data_dir.stat().st_mode & 0o777 == 0o700
+
+
+class TestSelectolaxDependencyBound:
+    """selectolax 的版本範圍必須與實際 import 的 backend 相符(CWE-1104 相關)。
+
+    ingestion/fetcher.py 與 scripts/enrich_open_date.py 都 import
+    `selectolax.parser`(Modest backend)。selectolax 1.0 移除了 Modest,
+    故無上限的 `>=0.3` 會讓 manifest 解析到 1.0.x,import 當場 ImportError。
+    uv.lock 固定 0.4.11,所以 CI(uv sync --locked)是綠的,但「從 manifest
+    全新安裝」是壞的 —— pip-audit 稽核的也是 lockfile 的版本樹,兩者先前
+    不一致。此測試把 manifest 與已稽核的 lockfile 綁在一起。
+
+    後續建議:改用主動維護的 lexbor backend,移除 2021 起即未更新的 Modest
+    (它解析的是 web.pcc.gov.tw 的不可信 HTML)。該變更動到 HTML 解析核心
+    流程,需人工核准,不在本次自動修正範圍。
+    """
+
+    @staticmethod
+    def _spec():
+        import re
+        from pathlib import Path
+
+        from packaging.requirements import Requirement
+
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        m = re.search(
+            r'"(selectolax[^"]*)"', pyproject.read_text(encoding="utf-8")
+        )
+        assert m, "selectolax dependency spec not found in pyproject.toml"
+        return Requirement(m.group(1)).specifier
+
+    def test_spec_excludes_versions_without_the_modest_backend(self) -> None:
+        from packaging.version import Version
+
+        spec = self._spec()
+        for removed in ("1.0.0", "1.0.2"):
+            assert not spec.contains(Version(removed)), (
+                f"selectolax {removed} 移除了 Modest backend,但 manifest 仍允許"
+                " —— 全新安裝會在 import selectolax.parser 時失敗"
+            )
+
+    def test_spec_still_allows_the_audited_locked_version(self) -> None:
+        from packaging.version import Version
+
+        assert self._spec().contains(Version("0.4.11"))
+
+    def test_installed_backend_actually_imports(self) -> None:
+        """程式碼實際使用的 import 路徑必須在安裝好的版本上可用。"""
+        from selectolax.parser import HTMLParser
+
+        assert HTMLParser("<p>ok</p>").css_first("p").text() == "ok"
