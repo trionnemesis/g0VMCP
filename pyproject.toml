@@ -17,7 +17,14 @@ classifiers = [
 dependencies = [
     "fastmcp>=3.2.0",
     "httpx>=0.27",
-    "selectolax>=0.3",
+    # 上限 <1:selectolax 1.0 移除了 Modest backend,而 ingestion/fetcher.py
+    # 與 scripts/enrich_open_date.py 都 import selectolax.parser(Modest)。
+    # 無上限時 manifest 會解析到 1.0.x,import 當場 ImportError —— uv.lock 固定
+    # 0.4.11,故 CI 綠燈但「從 manifest 全新安裝」是壞的,也與 pip-audit 實際
+    # 稽核的版本樹不一致。此上限讓 manifest 與已稽核的 lockfile 對齊。
+    # 後續應改用主動維護的 lexbor backend 以移除 2021 起即未更新的 Modest
+    # (CWE-1104);該變更動到 HTML 解析核心流程,需人工核准,見 issue。
+    "selectolax>=0.3,<1",
     "aiosqlite>=0.20",
     "defusedxml>=0.7",
 ]
